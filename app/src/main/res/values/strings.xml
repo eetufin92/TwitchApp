@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">TwitchApp</string>
+    <string name="action_settings">Settings</string>
+    <string name="ad_in_progress">Ad in progress</string>
+    <string name="ad_muted_notice">Audio automatically muted</string>
+    <string name="unmute">Unmute</string>
+    <string name="multistream">Multistream</string>
+    <string name="add_stream">Add Stream</string>
+    <string name="floating_chat">Floating Chat</string>
+</resources>
