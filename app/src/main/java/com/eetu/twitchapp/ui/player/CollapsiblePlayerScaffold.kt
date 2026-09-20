@@ -1,5 +1,7 @@
 package com.eetu.twitchapp.ui.player
 
+import android.app.Activity
+import android.content.pm.ActivityInfo
 import androidx.compose.animation.*
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
@@ -26,6 +28,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -36,6 +39,7 @@ import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.eetu.twitchapp.MainActivity
+import com.eetu.twitchapp.data.TwitchSettingsManager
 import com.eetu.twitchapp.ui.chat.ChatViewModel
 import com.eetu.twitchapp.ui.chat.NativeChatView
 import com.eetu.twitchapp.ui.components.FloatingResizableChat
@@ -55,6 +59,8 @@ fun CollapsiblePlayerScaffold(
     val configuration = LocalConfiguration.current
     val density = LocalDensity.current
     val isLandscape = configuration.screenWidthDp > configuration.screenHeightDp
+    val twitchColors = LocalTwitchColors.current
+    val settingsManager = remember { TwitchSettingsManager(context) }
 
     val currentChannel by playerViewModel.currentChannel.collectAsState()
     val streamInfo by playerViewModel.streamInfo.collectAsState()
@@ -69,6 +75,8 @@ fun CollapsiblePlayerScaffold(
     val isLowLatency by playerViewModel.isLowLatency.collectAsState()
     val isPipEnabled by playerViewModel.isPipEnabled.collectAsState()
     val backgroundAudioEnabled by playerViewModel.backgroundAudioEnabled.collectAsState()
+
+    var isOledMode by remember { mutableStateOf(settingsManager.isOledMode()) }
 
     val chatViewModel = remember { ChatViewModel() }
     val chatMessages by chatViewModel.messages.collectAsState()
@@ -111,7 +119,7 @@ fun CollapsiblePlayerScaffold(
                         )
                         .shadow(12.dp)
                         .clickable { playerViewModel.setMiniPlayer(false) },
-                    color = TwitchDarkCard
+                    color = twitchColors.card
                 ) {
                     Row(
                         modifier = Modifier
@@ -133,12 +141,14 @@ fun CollapsiblePlayerScaffold(
                                     PlayerView(ctx).apply {
                                         player = playerViewModel.exoPlayer
                                         useController = false
+                                        keepScreenOn = true
                                         resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
                                         setBackgroundColor(android.graphics.Color.BLACK)
                                     }
                                 },
                                 update = { pv ->
                                     pv.player = playerViewModel.exoPlayer
+                                    pv.keepScreenOn = true
                                 },
                                 modifier = Modifier.fillMaxSize()
                             )
@@ -224,7 +234,7 @@ fun CollapsiblePlayerScaffold(
                     modifier = Modifier
                         .fillMaxSize()
                         .offset { IntOffset(0, animatableDragY.value.roundToInt().coerceAtLeast(0)) }
-                        .background(TwitchDark)
+                        .background(twitchColors.background)
                 ) {
                     if (isLandscape) {
                         // Landscape / Tablet Split: Video on Left, Optional Chat on Right
@@ -245,6 +255,11 @@ fun CollapsiblePlayerScaffold(
                                 isLowLatency = isLowLatency,
                                 isPipEnabled = isPipEnabled,
                                 backgroundAudioEnabled = backgroundAudioEnabled,
+                                isOledMode = isOledMode,
+                                onToggleOledMode = {
+                                    isOledMode = it
+                                    settingsManager.setOledMode(it)
+                                },
                                 onSelectQuality = { playerViewModel.selectQuality(it) },
                                 onToggleAudioOnly = { playerViewModel.toggleAudioOnly() },
                                 onToggleLowLatency = { playerViewModel.toggleLowLatency() },
@@ -252,13 +267,25 @@ fun CollapsiblePlayerScaffold(
                                 onToggleBackgroundAudio = { playerViewModel.setBackgroundAudio(it) },
                                 onMinimize = { playerViewModel.setMiniPlayer(true) },
                                 onToggleFullscreen = {
-                                    isFullscreen = !isFullscreen
-                                    (context as? MainActivity)?.toggleFullscreen(isFullscreen)
+                                    val act = context as? Activity
+                                    act?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
                                 },
                                 isFullscreen = isFullscreen,
                                 showChatToggle = true,
-                                isChatVisible = showLandscapeSideChat,
-                                onToggleChat = { showLandscapeSideChat = !showLandscapeSideChat },
+                                isChatVisible = showLandscapeSideChat || showFloatingChat,
+                                onToggleChat = {
+                                    // Cycles cleanly: None -> Side-Bar -> Floating -> None
+                                    if (!showLandscapeSideChat && !showFloatingChat) {
+                                        showLandscapeSideChat = true
+                                        showFloatingChat = false
+                                    } else if (showLandscapeSideChat) {
+                                        showLandscapeSideChat = false
+                                        showFloatingChat = true
+                                    } else {
+                                        showLandscapeSideChat = false
+                                        showFloatingChat = false
+                                    }
+                                },
                                 modifier = if (showLandscapeSideChat) {
                                     Modifier
                                         .weight(1.8f)
@@ -274,11 +301,15 @@ fun CollapsiblePlayerScaffold(
                                     modifier = Modifier
                                         .weight(1f)
                                         .fillMaxHeight()
-                                        .background(TwitchDarkChat)
+                                        .background(twitchColors.chatBackground)
                                 ) {
                                     ChatHeader(
                                         channel = currentChannel,
                                         onOpenMultiStream = { onOpenMultiStream(currentChannel) },
+                                        onSwitchToFloating = {
+                                            showLandscapeSideChat = false
+                                            showFloatingChat = true
+                                        },
                                         onClose = { showLandscapeSideChat = false }
                                     )
                                     NativeChatView(
@@ -315,6 +346,11 @@ fun CollapsiblePlayerScaffold(
                                     isLowLatency = isLowLatency,
                                     isPipEnabled = isPipEnabled,
                                     backgroundAudioEnabled = backgroundAudioEnabled,
+                                    isOledMode = isOledMode,
+                                    onToggleOledMode = {
+                                        isOledMode = it
+                                        settingsManager.setOledMode(it)
+                                    },
                                     onSelectQuality = { playerViewModel.selectQuality(it) },
                                     onToggleAudioOnly = { playerViewModel.toggleAudioOnly() },
                                     onToggleLowLatency = { playerViewModel.toggleLowLatency() },
@@ -322,8 +358,8 @@ fun CollapsiblePlayerScaffold(
                                     onToggleBackgroundAudio = { playerViewModel.setBackgroundAudio(it) },
                                     onMinimize = { playerViewModel.setMiniPlayer(true) },
                                     onToggleFullscreen = {
-                                        isFullscreen = !isFullscreen
-                                        (context as? MainActivity)?.toggleFullscreen(isFullscreen)
+                                        val act = context as? Activity
+                                        act?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                                     },
                                     isFullscreen = isFullscreen,
                                     modifier = Modifier.fillMaxSize()
@@ -335,17 +371,66 @@ fun CollapsiblePlayerScaffold(
                                 streamInfo = streamInfo,
                                 channelName = currentChannel,
                                 onOpenMultiStream = { onOpenMultiStream(currentChannel) },
-                                onToggleFloatingChat = { showFloatingChat = !showFloatingChat }
+                                onToggleFloatingChat = {
+                                    showFloatingChat = !showFloatingChat
+                                    if (showFloatingChat) {
+                                        showLandscapeSideChat = false
+                                    }
+                                }
                             )
 
-                            // Embedded Native Chat
-                            NativeChatView(
-                                messages = chatMessages,
-                                emotes = chatEmotes,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .weight(1f)
-                            )
+                            // Embedded Native Chat or Floating Notice (never both at same time)
+                            if (showFloatingChat) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .weight(1f)
+                                        .background(twitchColors.background),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                                        modifier = Modifier.padding(24.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Filled.PictureInPicture,
+                                            contentDescription = null,
+                                            tint = TwitchPurple,
+                                            modifier = Modifier.size(44.dp)
+                                        )
+                                        Text(
+                                            text = "Chat is floating on screen",
+                                            color = Color.White,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 15.sp
+                                        )
+                                        Text(
+                                            text = "You can drag, resize, or minimize the floating chat window",
+                                            color = TwitchTextDim,
+                                            fontSize = 12.sp,
+                                            textAlign = TextAlign.Center
+                                        )
+                                        Button(
+                                            onClick = { showFloatingChat = false },
+                                            colors = ButtonDefaults.buttonColors(containerColor = TwitchPurple),
+                                            shape = RoundedCornerShape(8.dp)
+                                        ) {
+                                            Icon(Icons.Filled.VerticalAlignBottom, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(Modifier.width(6.dp))
+                                            Text("Dock Chat Below Video", fontSize = 12.sp)
+                                        }
+                                    }
+                                }
+                            } else {
+                                NativeChatView(
+                                    messages = chatMessages,
+                                    emotes = chatEmotes,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .weight(1f)
+                                )
+                            }
                         }
                     }
 
@@ -354,6 +439,10 @@ fun CollapsiblePlayerScaffold(
                         FloatingResizableChat(
                             channelName = currentChannel,
                             availableChannels = listOf(currentChannel),
+                            onDock = {
+                                showFloatingChat = false
+                                if (isLandscape) showLandscapeSideChat = true
+                            },
                             onClose = { showFloatingChat = false },
                             modifier = Modifier.fillMaxSize()
                         )
@@ -371,8 +460,9 @@ private fun StreamerDetailBar(
     onOpenMultiStream: () -> Unit,
     onToggleFloatingChat: () -> Unit
 ) {
+    val twitchColors = LocalTwitchColors.current
     Surface(
-        color = TwitchDarkCard,
+        color = twitchColors.card,
         shadowElevation = 2.dp,
         modifier = Modifier.fillMaxWidth()
     ) {
@@ -436,7 +526,7 @@ private fun StreamerDetailBar(
                 IconButton(onClick = onToggleFloatingChat) {
                     Icon(
                         Icons.AutoMirrored.Filled.Chat,
-                        contentDescription = "Floating Chat",
+                        contentDescription = "Toggle Floating Chat",
                         tint = TwitchPurple,
                         modifier = Modifier.size(20.dp)
                     )
@@ -450,12 +540,14 @@ private fun StreamerDetailBar(
 private fun ChatHeader(
     channel: String,
     onOpenMultiStream: () -> Unit,
+    onSwitchToFloating: (() -> Unit)? = null,
     onClose: (() -> Unit)? = null
 ) {
+    val twitchColors = LocalTwitchColors.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(TwitchDarkCard)
+            .background(twitchColors.card)
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
@@ -468,6 +560,21 @@ private fun ChatHeader(
         )
 
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            // Switch to floating chat button
+            if (onSwitchToFloating != null) {
+                IconButton(
+                    onClick = onSwitchToFloating,
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.PictureInPicture,
+                        contentDescription = "Float Chat",
+                        tint = TwitchPurple,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+
             IconButton(
                 onClick = onOpenMultiStream,
                 modifier = Modifier.size(28.dp)

@@ -5,6 +5,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -40,56 +41,42 @@ fun NativeChatView(
     modifier: Modifier = Modifier,
     fontSizeSp: Float = 13f
 ) {
+    val twitchColors = LocalTwitchColors.current
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
     var userScrolledUp by remember { mutableStateOf(false) }
 
-    // Check if user is at or very near the bottom
-    val isAtBottom by remember {
-        derivedStateOf {
+    // Only detect scroll when user is PHYSICALLY dragging with touch
+    val isDragged by listState.interactionSource.collectIsDraggedAsState()
+
+    LaunchedEffect(isDragged) {
+        if (!isDragged) {
+            // When user releases finger, check if they are near the bottom
             val visibleItems = listState.layoutInfo.visibleItemsInfo
             val totalItems = listState.layoutInfo.totalItemsCount
-            if (visibleItems.isEmpty() || totalItems == 0) true
-            else {
-                val lastVisible = visibleItems.last().index
-                lastVisible >= totalItems - 2
-            }
+            val atBottom = if (visibleItems.isEmpty() || totalItems == 0) true
+                           else visibleItems.last().index >= totalItems - 2
+            userScrolledUp = !atBottom
         }
     }
 
-    // Whenever at bottom, reset userScrolledUp
-    LaunchedEffect(listState) {
-        snapshotFlow { isAtBottom }.collect { atBottom ->
-            if (atBottom) {
-                userScrolledUp = false
-            }
-        }
-    }
-
-    // When scrolling and not at bottom, mark as user scrolled up
-    LaunchedEffect(listState.isScrollInProgress) {
-        if (listState.isScrollInProgress && !isAtBottom) {
-            userScrolledUp = true
-        }
-    }
-
-    // Auto-scroll to bottom on new messages if user hasn't scrolled up
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty() && !userScrolledUp) {
+    // Auto-scroll to bottom on new messages whenever user hasn't explicitly scrolled up
+    LaunchedEffect(messages.size, userScrolledUp) {
+        if (!userScrolledUp && messages.isNotEmpty()) {
             listState.scrollToItem(messages.size - 1)
         }
     }
 
     val showScrollButton by remember {
         derivedStateOf {
-            userScrolledUp && !isAtBottom && messages.isNotEmpty()
+            userScrolledUp && messages.isNotEmpty()
         }
     }
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(TwitchDarkChat)
+            .background(twitchColors.chatBackground)
     ) {
         if (messages.isEmpty()) {
             Box(

@@ -42,6 +42,7 @@ fun FloatingResizableChat(
     channelName: String,
     availableChannels: List<String> = emptyList(),
     onChannelSelected: (String) -> Unit = {},
+    onDock: (() -> Unit)? = null,
     onClose: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
@@ -64,13 +65,13 @@ fun FloatingResizableChat(
     var offsetX by remember { mutableFloatStateOf(60f) }
     var offsetY by remember { mutableFloatStateOf(160f) }
 
-    // Size state in dp
-    var chatWidth by remember { mutableStateOf(340.dp) }
-    var chatHeight by remember { mutableStateOf(480.dp) }
+    // Size state in dp (can be resized very small for compact overlays)
+    var chatWidth by remember { mutableStateOf(220.dp) }
+    var chatHeight by remember { mutableStateOf(220.dp) }
 
-    val minWidth = 260.dp
+    val minWidth = 160.dp
     val maxWidth = 600.dp
-    val minHeight = 300.dp
+    val minHeight = 140.dp
     val maxHeight = 800.dp
 
     if (isMinimized) {
@@ -191,6 +192,21 @@ fun FloatingResizableChat(
                                 )
                             }
 
+                            // Dock button (switches to docked side/inline chat)
+                            if (onDock != null) {
+                                IconButton(
+                                    onClick = onDock,
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Filled.VerticalAlignBottom,
+                                        contentDescription = "Dock Chat",
+                                        tint = TwitchPurple,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+
                             // Minimize button
                             IconButton(
                                 onClick = { isMinimized = true },
@@ -252,6 +268,7 @@ fun FloatingResizableChat(
                         NativeChatView(
                             messages = messages,
                             emotes = emotes,
+                            fontSizeSp = 11.5f,
                             modifier = Modifier.fillMaxSize()
                         )
 

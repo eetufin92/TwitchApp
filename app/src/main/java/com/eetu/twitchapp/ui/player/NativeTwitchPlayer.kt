@@ -58,6 +58,8 @@ fun NativeTwitchPlayer(
     onToggleLowLatency: () -> Unit = {},
     onTogglePipEnabled: (Boolean) -> Unit = {},
     onToggleBackgroundAudio: (Boolean) -> Unit = {},
+    isOledMode: Boolean = false,
+    onToggleOledMode: (Boolean) -> Unit = {},
     onMinimize: () -> Unit,
     onToggleFullscreen: () -> Unit = {},
     isFullscreen: Boolean = false,
@@ -67,6 +69,11 @@ fun NativeTwitchPlayer(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val activity = context as? MainActivity
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val isLandscape = configuration.screenWidthDp > configuration.screenHeightDp
+    val twitchColors = LocalTwitchColors.current
+
     var showControls by remember { mutableStateOf(false) }
     var showSettingsSheet by remember { mutableStateOf(false) }
     var resizeMode by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
@@ -76,6 +83,33 @@ fun NativeTwitchPlayer(
         if (showControls) {
             delay(3500)
             showControls = false
+        }
+    }
+
+    // Keep screen on while video/audio is playing to prevent display sleep
+    DisposableEffect(exoPlayer.isPlaying) {
+        val window = activity?.window
+        if (exoPlayer.isPlaying) {
+            window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        onDispose {
+            window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
+    // Fullscreen / Status bar handling:
+    // In portrait: always show status bar
+    // In landscape: show status bar only when controls are visible, otherwise hide
+    DisposableEffect(isLandscape, showControls) {
+        if (isLandscape) {
+            activity?.setStatusBarsVisible(showControls)
+        } else {
+            activity?.setStatusBarsVisible(true)
+        }
+        onDispose {
+            activity?.setStatusBarsVisible(true)
         }
     }
 
@@ -98,6 +132,7 @@ fun NativeTwitchPlayer(
                     PlayerView(ctx).apply {
                         player = exoPlayer
                         useController = false
+                        this.keepScreenOn = true
                         layoutParams = ViewGroup.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.MATCH_PARENT
@@ -109,6 +144,7 @@ fun NativeTwitchPlayer(
                 update = { playerView ->
                     playerView.player = exoPlayer
                     playerView.resizeMode = resizeMode
+                    playerView.keepScreenOn = true
                 },
                 modifier = Modifier.fillMaxSize()
             )
@@ -117,7 +153,7 @@ fun NativeTwitchPlayer(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(TwitchDark),
+                    .background(twitchColors.background),
                 contentAlignment = Alignment.Center
             ) {
                 Column(
@@ -619,6 +655,35 @@ fun NativeTwitchPlayer(
                     Switch(
                         checked = backgroundAudioEnabled,
                         onCheckedChange = onToggleBackgroundAudio,
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = TwitchPurple
+                        )
+                    )
+                }
+
+                // Full OLED Black Mode Toggle
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Full OLED Black Mode",
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp
+                        )
+                        Text(
+                            text = "Pure #000000 black background for maximum OLED battery savings",
+                            color = TwitchTextDim,
+                            fontSize = 12.sp
+                        )
+                    }
+                    Switch(
+                        checked = isOledMode,
+                        onCheckedChange = onToggleOledMode,
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = Color.White,
                             checkedTrackColor = TwitchPurple

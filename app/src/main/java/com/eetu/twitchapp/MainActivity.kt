@@ -136,6 +136,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    fun setStatusBarsVisible(visible: Boolean) {
+        val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
+        if (visible) {
+            windowInsetsController.show(WindowInsetsCompat.Type.statusBars())
+        } else {
+            windowInsetsController.hide(WindowInsetsCompat.Type.statusBars())
+            windowInsetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+    }
+
     override fun onPictureInPictureModeChanged(
         isInPictureInPictureMode: Boolean,
         newConfig: android.content.res.Configuration
@@ -152,8 +162,11 @@ class MainActivity : ComponentActivity() {
         handleIntent(intent)
         enableEdgeToEdge()
 
+        val settingsManager = com.eetu.twitchapp.data.TwitchSettingsManager(this)
+
         setContent {
-            TwitchAppTheme {
+            val isOled by remember { mutableStateOf(settingsManager.isOledMode()) }
+            TwitchAppTheme(isOled = isOled) {
                 val context = LocalContext.current
 
                 // Request POST_NOTIFICATIONS permission on Android 13+

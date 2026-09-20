@@ -22,7 +22,11 @@ class TwitchSettingsManager(context: Context) {
         const val KEY_PREFERRED_QUALITY = "preferred_quality"
         const val KEY_AUDIO_ONLY = "audio_only"
         const val KEY_SIDE_CHAT_VISIBLE = "side_chat_visible"
+        const val KEY_OLED_MODE = "oled_mode"
     }
+
+    fun isOledMode(): Boolean = prefs.getBoolean(KEY_OLED_MODE, false)
+    fun setOledMode(enabled: Boolean) = prefs.edit().putBoolean(KEY_OLED_MODE, enabled).apply()
 
     fun isAutoMuteAds(): Boolean = prefs.getBoolean(KEY_AUTO_MUTE_ADS, true)
     fun setAutoMuteAds(enabled: Boolean) = prefs.edit().putBoolean(KEY_AUTO_MUTE_ADS, enabled).apply()

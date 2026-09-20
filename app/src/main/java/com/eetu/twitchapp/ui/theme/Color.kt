@@ -13,3 +13,9 @@ val TwitchTextLight = Color(0xFFEFEFF1)
 val TwitchTextDim = Color(0xFFADADB8)
 val TwitchRed = Color(0xFFEB0400)
 val TwitchGreen = Color(0xFF00F59B)
+
+// Full OLED pure black palette
+val TwitchOledBackground = Color(0xFF000000)
+val TwitchOledSurface = Color(0xFF080808)
+val TwitchOledCard = Color(0xFF101010)
+val TwitchOledChat = Color(0xFF000000)

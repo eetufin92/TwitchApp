@@ -23,9 +23,12 @@ fun ChatAppearanceSettingsScreen(
     val context = LocalContext.current
     val settingsManager = remember { TwitchSettingsManager(context) }
 
+    var oledMode by remember { mutableStateOf(settingsManager.isOledMode()) }
     var desktopMode by remember { mutableStateOf(settingsManager.isDesktopMode()) }
     var chatOpacity by remember { mutableFloatStateOf(settingsManager.getChatOpacity()) }
     var customUserAgent by remember { mutableStateOf(settingsManager.getUserAgent()) }
+
+    val twitchColors = LocalTwitchColors.current
 
     Scaffold(
         topBar = {
@@ -36,10 +39,10 @@ fun ChatAppearanceSettingsScreen(
                         Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = TwitchDark)
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = twitchColors.background)
             )
         },
-        containerColor = TwitchDark
+        containerColor = twitchColors.background
     ) { paddingValues ->
         Column(
             modifier = Modifier
@@ -50,8 +53,18 @@ fun ChatAppearanceSettingsScreen(
         ) {
             Text("Display & Layout", color = TwitchPurple, fontWeight = FontWeight.Bold, fontSize = 14.sp)
 
-            Card(colors = CardDefaults.cardColors(containerColor = TwitchDarkCard)) {
+            Card(colors = CardDefaults.cardColors(containerColor = twitchColors.card)) {
                 Column {
+                    EmoteToggleRow(
+                        title = "Full OLED Black Mode",
+                        description = "Pure #000000 black background across the app for true blacks and maximum battery savings on OLED displays",
+                        checked = oledMode,
+                        onCheckedChange = {
+                            oledMode = it
+                            settingsManager.setOledMode(it)
+                        }
+                    )
+                    HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
                     EmoteToggleRow(
                         title = "Force Desktop Layout",
                         description = "Always request full desktop Twitch layout with side-by-side stream & chat (Default on tablets)",
