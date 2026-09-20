@@ -57,6 +57,8 @@ class MainActivity : ComponentActivity() {
         var currentStreamer: String? = null
     }
 
+    private var activePlayerViewModel: PlayerViewModel? = null
+
     override fun onStart() {
         super.onStart()
         isAppVisible = true
@@ -66,8 +68,15 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         super.onStop()
         isAppVisible = false
-        if (currentIsPlaying) {
-            PlaybackService.start(this, currentTitle, currentStreamer)
+        val vm = activePlayerViewModel
+        if (vm != null && vm.backgroundAudioEnabled.value && vm.isPlaying.value) {
+            PlaybackService.start(
+                this,
+                vm.streamInfo.value?.title ?: "Twitch Stream",
+                vm.streamInfo.value?.displayName ?: vm.currentChannel.value
+            )
+        } else if (!isInPip.value) {
+            activePlayerViewModel?.exoPlayer?.pause()
         }
     }
 
@@ -86,13 +95,14 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onUserLeaveHint() {
-        if (isPlayerVisible && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val pipEnabled = activePlayerViewModel?.isPipEnabled?.value ?: true
+        if (isPlayerVisible && pipEnabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             enterPipMode()
         }
         super.onUserLeaveHint()
     }
 
-    private fun enterPipMode() {
+    fun enterPipMode() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val (w, h) = videoDimensions
             val ratio = if (w > 0 && h > 0) {
@@ -113,6 +123,16 @@ class MainActivity : ComponentActivity() {
             }
 
             enterPictureInPictureMode(builder.build())
+        }
+    }
+
+    fun toggleFullscreen(fullscreen: Boolean) {
+        val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
+        if (fullscreen) {
+            windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
+            windowInsetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        } else {
+            windowInsetsController.show(WindowInsetsCompat.Type.systemBars())
         }
     }
 
@@ -159,7 +179,7 @@ class MainActivity : ComponentActivity() {
                 }
 
                 val playerViewModel = remember {
-                    PlayerViewModel(application)
+                    PlayerViewModel(application).also { activePlayerViewModel = it }
                 }
 
                 LaunchedEffect(intentUrl.value) {

@@ -74,7 +74,11 @@ fun HomeScreen(
 
     Scaffold(
         topBar = {
-            Column(modifier = Modifier.background(TwitchDark)) {
+            Column(
+                modifier = Modifier
+                    .background(TwitchDark)
+                    .statusBarsPadding()
+            ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()

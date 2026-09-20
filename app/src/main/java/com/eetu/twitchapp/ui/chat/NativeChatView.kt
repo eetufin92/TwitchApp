@@ -42,18 +42,47 @@ fun NativeChatView(
 ) {
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
+    var userScrolledUp by remember { mutableStateOf(false) }
 
-    // Determine if the user is currently looking at older messages (scrolled up)
-    val isScrolledUp by remember {
+    // Check if user is at or very near the bottom
+    val isAtBottom by remember {
         derivedStateOf {
-            listState.canScrollForward
+            val visibleItems = listState.layoutInfo.visibleItemsInfo
+            val totalItems = listState.layoutInfo.totalItemsCount
+            if (visibleItems.isEmpty() || totalItems == 0) true
+            else {
+                val lastVisible = visibleItems.last().index
+                lastVisible >= totalItems - 2
+            }
         }
     }
 
-    // Auto-scroll to bottom on new messages if user isn't scrolled up
+    // Whenever at bottom, reset userScrolledUp
+    LaunchedEffect(listState) {
+        snapshotFlow { isAtBottom }.collect { atBottom ->
+            if (atBottom) {
+                userScrolledUp = false
+            }
+        }
+    }
+
+    // When scrolling and not at bottom, mark as user scrolled up
+    LaunchedEffect(listState.isScrollInProgress) {
+        if (listState.isScrollInProgress && !isAtBottom) {
+            userScrolledUp = true
+        }
+    }
+
+    // Auto-scroll to bottom on new messages if user hasn't scrolled up
     LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty() && !isScrolledUp) {
-            listState.animateScrollToItem(messages.size - 1)
+        if (messages.isNotEmpty() && !userScrolledUp) {
+            listState.scrollToItem(messages.size - 1)
+        }
+    }
+
+    val showScrollButton by remember {
+        derivedStateOf {
+            userScrolledUp && !isAtBottom && messages.isNotEmpty()
         }
     }
 
@@ -92,9 +121,9 @@ fun NativeChatView(
             }
         }
 
-        // Floating "Chat Paused Due to Scroll" Button
+        // Floating "More messages below" Button
         AnimatedVisibility(
-            visible = isScrolledUp,
+            visible = showScrollButton,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier
@@ -106,9 +135,10 @@ fun NativeChatView(
                 shape = CircleShape,
                 shadowElevation = 4.dp,
                 modifier = Modifier.clickable {
+                    userScrolledUp = false
                     coroutineScope.launch {
                         if (messages.isNotEmpty()) {
-                            listState.animateScrollToItem(messages.size - 1)
+                            listState.scrollToItem(messages.size - 1)
                         }
                     }
                 }

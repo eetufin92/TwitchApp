@@ -16,6 +16,12 @@ class TwitchSettingsManager(context: Context) {
         const val KEY_DESKTOP_MODE = "desktop_mode"
         const val KEY_USER_AGENT = "user_agent"
         const val KEY_FLOATING_CHAT_ENABLED = "floating_chat_enabled"
+        const val KEY_LOW_LATENCY = "low_latency"
+        const val KEY_PIP_ENABLED = "pip_enabled"
+        const val KEY_BACKGROUND_AUDIO = "background_audio"
+        const val KEY_PREFERRED_QUALITY = "preferred_quality"
+        const val KEY_AUDIO_ONLY = "audio_only"
+        const val KEY_SIDE_CHAT_VISIBLE = "side_chat_visible"
     }
 
     fun isAutoMuteAds(): Boolean = prefs.getBoolean(KEY_AUTO_MUTE_ADS, true)
@@ -44,4 +50,22 @@ class TwitchSettingsManager(context: Context) {
 
     fun isFloatingChatEnabled(): Boolean = prefs.getBoolean(KEY_FLOATING_CHAT_ENABLED, true)
     fun setFloatingChatEnabled(enabled: Boolean) = prefs.edit().putBoolean(KEY_FLOATING_CHAT_ENABLED, enabled).apply()
+
+    fun isLowLatency(): Boolean = prefs.getBoolean(KEY_LOW_LATENCY, true)
+    fun setLowLatency(enabled: Boolean) = prefs.edit().putBoolean(KEY_LOW_LATENCY, enabled).apply()
+
+    fun isPipEnabled(): Boolean = prefs.getBoolean(KEY_PIP_ENABLED, true)
+    fun setPipEnabled(enabled: Boolean) = prefs.edit().putBoolean(KEY_PIP_ENABLED, enabled).apply()
+
+    fun isBackgroundAudio(): Boolean = prefs.getBoolean(KEY_BACKGROUND_AUDIO, true)
+    fun setBackgroundAudio(enabled: Boolean) = prefs.edit().putBoolean(KEY_BACKGROUND_AUDIO, enabled).apply()
+
+    fun getPreferredQuality(): String = prefs.getString(KEY_PREFERRED_QUALITY, "auto") ?: "auto"
+    fun setPreferredQuality(quality: String) = prefs.edit().putString(KEY_PREFERRED_QUALITY, quality).apply()
+
+    fun isAudioOnly(): Boolean = prefs.getBoolean(KEY_AUDIO_ONLY, false)
+    fun setAudioOnly(enabled: Boolean) = prefs.edit().putBoolean(KEY_AUDIO_ONLY, enabled).apply()
+
+    fun isSideChatVisible(): Boolean = prefs.getBoolean(KEY_SIDE_CHAT_VISIBLE, false)
+    fun setSideChatVisible(visible: Boolean) = prefs.edit().putBoolean(KEY_SIDE_CHAT_VISIBLE, visible).apply()
 }
