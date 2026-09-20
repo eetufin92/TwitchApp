@@ -40,6 +40,11 @@ A modern, feature-rich Twitch client for Android built with **Jetpack Compose** 
 - **Seamless PiP**: Automatically enters Picture-in-Picture when pressing Home or switching apps during video playback, with accurate aspect ratio.
 - **Background Audio**: Integrated with `MediaSession` and Android's foreground service to continue listening to streams when the screen is turned off.
 
+### 7. uBlock Origin AdBlocker Integration
+- **Official uBlock Origin Filter Lists**: Directly subscribes to and synchronizes with official community filter lists (*uBlock filters*, *uBlock Badware*, *uBlock Privacy*, *uBlock Quick fixes*, *EasyList*, *EasyPrivacy*, *Peter Lowe's*).
+- **Network Interception & Cosmetic Hiding**: Intercepts third-party telemetry, tracking, and ad requests returning HTTP 204 No Content, and injects CSS element-hiding rules.
+- **Twitch Protections**: Specifically safeguards Twitch live stream manifests, GQL endpoints, and emote CDNs to guarantee zero playback interruption.
+
 ---
 
 ## Tech Stack & Architecture
@@ -58,6 +63,9 @@ A modern, feature-rich Twitch client for Android built with **Jetpack Compose** 
 
 ```
 TwitchApp/
+├── .github/
+│   └── workflows/
+│       └── android.yml          # GitHub Actions CI/CD (assembleRelease, APK signing, GitHub Release)
 ├── app/
 │   ├── build.gradle.kts
 │   ├── proguard-rules.pro
@@ -70,6 +78,7 @@ TwitchApp/
 │       │   ├── bridge/
 │       │   │   └── TwitchAndroidBridge.kt
 │       │   ├── data/
+│       │   │   ├── AdBlockManager.kt    # uBlock Origin list downloader & interceptor
 │       │   │   ├── EmoteRepository.kt    # 7TV, BTTV, FFZ API fetcher & cache
 │       │   │   ├── TwitchSettingsManager.kt
 │       │   │   └── model/
@@ -80,12 +89,13 @@ TwitchApp/
 │       │   │   └── PlaybackService.kt   # Background audio foreground service
 │       │   └── ui/
 │       │       ├── components/
-│       │       │   ├── TwitchWebView.kt # Web player, SSAI overlay, FAB menu
+│       │       │   ├── TwitchWebView.kt # Web player, SSAI overlay, draggable FAB menu, top bar
 │       │       │   └── FloatingResizableChat.kt
 │       │       ├── multistream/
 │       │       │   └── MultiStreamScreen.kt # Multi-view 1-4 stream grid
 │       │       ├── settings/
 │       │       │   ├── SettingsScreen.kt
+│       │       │   ├── AdBlockSettingsScreen.kt
 │       │       │   ├── EmoteSettingsScreen.kt
 │       │       │   ├── AdSettingsScreen.kt
 │       │       │   └── ChatAppearanceSettingsScreen.kt
