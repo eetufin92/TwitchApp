@@ -403,7 +403,7 @@ fun TwitchWebView(
             )
 
             // Native Compose Ad Overlay (when ad is detected and enabled in settings)
-            AnimatedVisibility(
+            androidx.compose.animation.AnimatedVisibility(
                 visible = isAdPlaying && settingsManager.isShowAdOverlay(),
                 enter = fadeIn(),
                 exit = fadeOut(),
