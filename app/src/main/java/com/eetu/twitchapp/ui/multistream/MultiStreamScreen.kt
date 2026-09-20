@@ -1,9 +1,11 @@
+@file:OptIn(
+    androidx.compose.material3.ExperimentalMaterial3Api::class
+)
+
 package com.eetu.twitchapp.ui.multistream
 
-import android.annotation.SuppressLint
-import android.webkit.WebSettings
-import android.webkit.WebView
-import android.webkit.WebViewClient
+import android.net.Uri
+import android.view.ViewGroup
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -19,15 +21,21 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
+import com.eetu.twitchapp.data.network.TwitchGqlClient
 import com.eetu.twitchapp.ui.components.FloatingResizableChat
 import com.eetu.twitchapp.ui.theme.*
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MultiStreamScreen(
     initialChannels: List<String> = emptyList(),
@@ -300,7 +308,6 @@ fun MultiStreamScreen(
     }
 }
 
-@SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun StreamTile(
     channel: String,
@@ -309,14 +316,42 @@ fun StreamTile(
     onClose: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var webViewRef by remember { mutableStateOf<WebView?>(null) }
+    val context = LocalContext.current
+    val gqlClient = remember { TwitchGqlClient() }
+    var isLoading by remember { mutableStateOf(true) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    val exoPlayer = remember(channel) {
+        ExoPlayer.Builder(context).build().apply {
+            repeatMode = Player.REPEAT_MODE_OFF
+            playWhenReady = true
+        }
+    }
+
+    DisposableEffect(channel) {
+        onDispose {
+            exoPlayer.release()
+        }
+    }
 
     LaunchedEffect(isActiveAudio) {
-        // Toggle audio in the web player
-        webViewRef?.evaluateJavascript(
-            "const v = document.querySelector('video'); if (v) { v.muted = ${!isActiveAudio}; if(${isActiveAudio}) v.volume = 1.0; }",
-            null
-        )
+        exoPlayer.volume = if (isActiveAudio) 1f else 0f
+    }
+
+    LaunchedEffect(channel) {
+        isLoading = true
+        errorMessage = null
+        val tokenResult = gqlClient.getStreamPlaybackAccessToken(channel)
+        if (tokenResult != null) {
+            val mediaItem = MediaItem.fromUri(Uri.parse(tokenResult.masterPlaylistUrl))
+            exoPlayer.setMediaItem(mediaItem)
+            exoPlayer.prepare()
+            exoPlayer.play()
+            isLoading = false
+        } else {
+            errorMessage = "Channel offline"
+            isLoading = false
+        }
     }
 
     Card(
@@ -399,44 +434,33 @@ fun StreamTile(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .clickable { onSelectAudio() }
+                    .clickable { onSelectAudio() },
+                contentAlignment = Alignment.Center
             ) {
-                val playerUrl = remember(channel) {
-                    "https://player.twitch.tv/?channel=$channel&parent=localhost&muted=${!isActiveAudio}&autoplay=true"
-                }
-
                 AndroidView(
                     factory = { ctx ->
-                        WebView(ctx).apply {
-                            webViewRef = this
-                            settings.apply {
-                                javaScriptEnabled = true
-                                domStorageEnabled = true
-                                mediaPlaybackRequiresUserGesture = false
-                                cacheMode = WebSettings.LOAD_DEFAULT
-                                userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                            }
+                        PlayerView(ctx).apply {
+                            player = exoPlayer
+                            useController = false
+                            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                             setBackgroundColor(android.graphics.Color.BLACK)
-                            webViewClient = object : WebViewClient() {
-                                override fun onPageFinished(view: WebView?, url: String?) {
-                                    super.onPageFinished(view, url)
-                                    // Ensure audio mute state matches
-                                    view?.evaluateJavascript(
-                                        "const v = document.querySelector('video'); if (v) { v.muted = ${!isActiveAudio}; }",
-                                        null
-                                    )
-                                }
-                            }
-                            loadUrl(playerUrl)
                         }
                     },
-                    update = { view ->
-                        if (view.url != playerUrl) {
-                            view.loadUrl(playerUrl)
-                        }
+                    update = { pv ->
+                        pv.player = exoPlayer
                     },
                     modifier = Modifier.fillMaxSize()
                 )
+
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        color = TwitchPurple,
+                        modifier = Modifier.size(32.dp),
+                        strokeWidth = 2.5.dp
+                    )
+                } else if (errorMessage != null) {
+                    Text(errorMessage ?: "", color = TwitchTextDim, fontSize = 12.sp)
+                }
             }
         }
     }

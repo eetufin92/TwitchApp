@@ -32,11 +32,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
+import com.eetu.twitchapp.ui.chat.ChatViewModel
+import com.eetu.twitchapp.ui.chat.NativeChatView
 import com.eetu.twitchapp.ui.theme.*
 import kotlin.math.roundToInt
 
-@SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun FloatingResizableChat(
     channelName: String,
@@ -51,6 +51,14 @@ fun FloatingResizableChat(
     var activeChannel by remember(channelName) { mutableStateOf(channelName.ifEmpty { "twitch" }) }
     var isMinimized by remember { mutableStateOf(false) }
     var opacity by remember { mutableFloatStateOf(0.92f) }
+
+    val chatViewModel = remember { ChatViewModel() }
+    val messages by chatViewModel.messages.collectAsState()
+    val emotes by chatViewModel.emotes.collectAsState()
+
+    LaunchedEffect(activeChannel) {
+        chatViewModel.setChannel(activeChannel)
+    }
 
     // Position state in pixels
     var offsetX by remember { mutableFloatStateOf(60f) }
@@ -239,40 +247,11 @@ fun FloatingResizableChat(
                         }
                     }
 
-                    // Chat WebView Content
+                    // Native IRC Chat Content
                     Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                        val chatUrl = remember(activeChannel) {
-                            "https://www.twitch.tv/embed/$activeChannel/chat?parent=localhost&darkpopout"
-                        }
-
-                        AndroidView(
-                            factory = { ctx ->
-                                WebView(ctx).apply {
-                                    settings.apply {
-                                        javaScriptEnabled = true
-                                        domStorageEnabled = true
-                                        databaseEnabled = true
-                                        cacheMode = WebSettings.LOAD_DEFAULT
-                                        userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                                    }
-                                    setBackgroundColor(android.graphics.Color.TRANSPARENT)
-                                    webViewClient = object : WebViewClient() {
-                                        override fun onPageFinished(view: WebView?, url: String?) {
-                                            super.onPageFinished(view, url)
-                                            // Inject our emote and styling script into the embedded chat!
-                                            val jsScript = ctx.assets.open("twitch_injections.js")
-                                                .bufferedReader().use { it.readText() }
-                                            view?.evaluateJavascript(jsScript, null)
-                                        }
-                                    }
-                                    loadUrl(chatUrl)
-                                }
-                            },
-                            update = { view ->
-                                if (view.url != chatUrl) {
-                                    view.loadUrl(chatUrl)
-                                }
-                            },
+                        NativeChatView(
+                            messages = messages,
+                            emotes = emotes,
                             modifier = Modifier.fillMaxSize()
                         )
 

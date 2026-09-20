@@ -36,7 +36,10 @@ import androidx.navigation3.ui.NavDisplay
 import com.eetu.twitchapp.navigation.Destination
 import com.eetu.twitchapp.service.PlaybackService
 import com.eetu.twitchapp.ui.components.TwitchWebView
+import com.eetu.twitchapp.ui.home.HomeScreen
 import com.eetu.twitchapp.ui.multistream.MultiStreamScreen
+import com.eetu.twitchapp.ui.player.CollapsiblePlayerScaffold
+import com.eetu.twitchapp.ui.player.PlayerViewModel
 import com.eetu.twitchapp.ui.settings.*
 import com.eetu.twitchapp.ui.theme.TwitchAppTheme
 
@@ -155,6 +158,26 @@ class MainActivity : ComponentActivity() {
                     adBlockManager.autoUpdateIfDue()
                 }
 
+                val playerViewModel = remember {
+                    PlayerViewModel(application)
+                }
+
+                LaunchedEffect(intentUrl.value) {
+                    val raw = intentUrl.value
+                    if (!raw.isNullOrEmpty()) {
+                        val clean = raw.trim()
+                            .removePrefix("https://")
+                            .removePrefix("http://")
+                            .removePrefix("www.")
+                            .removePrefix("m.")
+                            .removePrefix("twitch.tv/")
+                            .trim('/')
+                        if (clean.isNotEmpty() && !clean.contains('/')) {
+                            playerViewModel.playChannel(clean)
+                        }
+                    }
+                }
+
                 val backStack = rememberNavBackStack(Destination.Player())
 
                 NavDisplay(
@@ -165,42 +188,48 @@ class MainActivity : ComponentActivity() {
                         is Destination.Player -> {
                             isPlayerVisible = true
                             NavEntry(key = destination) {
-                                MainPlayerScreen(
-                                    initialUrl = intentUrl.value ?: "https://m.twitch.tv",
-                                    isInPip = isInPip.value,
-                                    onVideoDimensionsChanged = { w, h ->
-                                        videoDimensions = Pair(w, h)
-                                    },
-                                    onFullscreenChanged = { fullscreen ->
-                                        isFullscreen = fullscreen
-                                    },
-                                    onNavigateToSettings = {
-                                        if (!backStack.contains(Destination.Settings)) {
-                                            backStack.add(Destination.Settings)
-                                        }
-                                    },
-                                    onNavigateToEmoteSettings = {
-                                        if (!backStack.contains(Destination.EmoteSettings)) {
-                                            backStack.add(Destination.EmoteSettings)
-                                        }
-                                    },
-                                    onNavigateToAdSettings = {
-                                        if (!backStack.contains(Destination.AdSettings)) {
-                                            backStack.add(Destination.AdSettings)
-                                        }
-                                    },
-                                    onNavigateToAdBlockSettings = {
-                                        if (!backStack.contains(Destination.AdBlockSettings)) {
-                                            backStack.add(Destination.AdBlockSettings)
-                                        }
-                                    },
-                                    onNavigateToMultiStream = { channel ->
+                                CollapsiblePlayerScaffold(
+                                    playerViewModel = playerViewModel,
+                                    onOpenMultiStream = { channel ->
                                         if (!backStack.any { it is Destination.MultiStream }) {
                                             val initial = if (channel.isNotEmpty()) listOf(channel) else emptyList()
                                             backStack.add(Destination.MultiStream(initial))
                                         }
+                                    },
+                                    onOpenSettings = {
+                                        if (!backStack.contains(Destination.Settings)) {
+                                            backStack.add(Destination.Settings)
+                                        }
                                     }
-                                )
+                                ) {
+                                    HomeScreen(
+                                        onChannelSelected = { channel ->
+                                            playerViewModel.playChannel(channel)
+                                        },
+                                        onOpenMultiStream = {
+                                            if (!backStack.any { it is Destination.MultiStream }) {
+                                                val activeCh = playerViewModel.currentChannel.value
+                                                val initial = if (activeCh.isNotEmpty()) listOf(activeCh) else emptyList()
+                                                backStack.add(Destination.MultiStream(initial))
+                                            }
+                                        },
+                                        onOpenSettings = {
+                                            if (!backStack.contains(Destination.Settings)) {
+                                                backStack.add(Destination.Settings)
+                                            }
+                                        },
+                                        onOpenEmoteSettings = {
+                                            if (!backStack.contains(Destination.EmoteSettings)) {
+                                                backStack.add(Destination.EmoteSettings)
+                                            }
+                                        },
+                                        onOpenAdSettings = {
+                                            if (!backStack.contains(Destination.AdSettings)) {
+                                                backStack.add(Destination.AdSettings)
+                                            }
+                                        }
+                                    )
+                                }
                             }
                         }
                         is Destination.MultiStream -> {
@@ -288,68 +317,6 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
-        }
-    }
-}
-
-@Composable
-fun MainPlayerScreen(
-    initialUrl: String,
-    isInPip: Boolean,
-    onVideoDimensionsChanged: (Int, Int) -> Unit,
-    onFullscreenChanged: (Boolean) -> Unit,
-    onNavigateToSettings: () -> Unit,
-    onNavigateToEmoteSettings: () -> Unit,
-    onNavigateToAdSettings: () -> Unit,
-    onNavigateToAdBlockSettings: () -> Unit,
-    onNavigateToMultiStream: (String) -> Unit
-) {
-    val context = LocalContext.current
-    val activity = remember(context) { context as? Activity }
-    var isFullscreen by remember { mutableStateOf(false) }
-
-    Scaffold(
-        modifier = Modifier.fillMaxSize(),
-        contentWindowInsets = if (isFullscreen) WindowInsets(0, 0, 0, 0) else WindowInsets.safeDrawing
-    ) { innerPadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(if (isFullscreen) androidx.compose.foundation.layout.PaddingValues(0.dp) else innerPadding)
-        ) {
-            TwitchWebView(
-                modifier = Modifier.fillMaxSize(),
-                initialUrl = initialUrl,
-                onFullscreenStateChanged = { fullscreen ->
-                    isFullscreen = fullscreen
-                    onFullscreenChanged(fullscreen)
-
-                    // Adjust orientation and system insets
-                    if (fullscreen) {
-                        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_USER
-                    } else {
-                        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-                    }
-
-                    val window = activity?.window
-                    if (window != null) {
-                        val controller = WindowCompat.getInsetsController(window, window.decorView)
-                        if (fullscreen) {
-                            controller.hide(WindowInsetsCompat.Type.systemBars())
-                            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                        } else {
-                            controller.show(WindowInsetsCompat.Type.systemBars())
-                        }
-                    }
-                },
-                onVideoDimensionsChanged = onVideoDimensionsChanged,
-                onOpenSettings = onNavigateToSettings,
-                onOpenEmoteSettings = onNavigateToEmoteSettings,
-                onOpenAdSettings = onNavigateToAdSettings,
-                onOpenAdBlockSettings = onNavigateToAdBlockSettings,
-                onOpenMultiStream = onNavigateToMultiStream,
-                isInPip = isInPip
-            )
         }
     }
 }

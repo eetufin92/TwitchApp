@@ -45,3 +45,7 @@ google-services.json
 
 # Android Profiling
 *.hprof
+
+# Extras
+samples
+.android_home
