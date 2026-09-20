@@ -30,13 +30,13 @@ import com.eetu.twitchapp.ui.theme.*
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MultiStreamScreen(
-    initialChannels: List<String> = listOf("tarik", "shroud"),
+    initialChannels: List<String> = emptyList(),
     onNavigateBack: () -> Unit
 ) {
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.screenWidthDp > configuration.screenHeightDp
 
-    val streams = remember { mutableStateListOf<String>().apply { addAll(initialChannels.ifEmpty { listOf("tarik", "shroud") }) } }
+    val streams = remember { mutableStateListOf<String>().apply { addAll(initialChannels) } }
     var activeAudioChannel by remember { mutableStateOf(streams.firstOrNull() ?: "") }
     var showAddDialog by remember { mutableStateOf(false) }
     var showFloatingChat by remember { mutableStateOf(false) }
@@ -118,8 +118,8 @@ fun MultiStreamScreen(
                             isActiveAudio = activeAudioChannel == streams[0],
                             onSelectAudio = { activeAudioChannel = streams[0] },
                             onClose = {
-                                streams.removeAt(0)
-                                if (activeAudioChannel == streams.getOrNull(0)) activeAudioChannel = ""
+                                val removed = streams.removeAt(0)
+                                if (activeAudioChannel == removed) activeAudioChannel = streams.firstOrNull() ?: ""
                             },
                             modifier = Modifier.fillMaxSize()
                         )
@@ -165,8 +165,8 @@ fun MultiStreamScreen(
                                 isActiveAudio = activeAudioChannel == streams[0],
                                 onSelectAudio = { activeAudioChannel = streams[0] },
                                 onClose = {
-                                    streams.removeAt(0)
-                                    if (activeAudioChannel == streams.getOrNull(0)) activeAudioChannel = streams.firstOrNull() ?: ""
+                                    val removed = streams.removeAt(0)
+                                    if (activeAudioChannel == removed) activeAudioChannel = streams.firstOrNull() ?: ""
                                 },
                                 modifier = Modifier.weight(1.1f).fillMaxWidth()
                             )

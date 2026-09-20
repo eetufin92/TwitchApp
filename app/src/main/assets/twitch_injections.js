@@ -8,41 +8,33 @@
     console.log("Twitch injections initializing...");
 
     // ==========================================
-    // 1. POPULAR GLOBAL EMOTES CACHE (Instant offline rendering)
+    // 1. POPULAR GLOBAL EMOTES CACHE (Verified CDN URLs)
     // ==========================================
     const DEFAULT_EMOTES = {
-        "KEKW": "https://cdn.7tv.app/emote/60afb5d8e09f5db760920ef0/2x.webp",
-        "Pog": "https://cdn.7tv.app/emote/60ae3e620583b28b704cbf9b/2x.webp",
-        "PogBlink": "https://cdn.7tv.app/emote/60ae3f0c0583b28b704cbfe5/2x.webp",
-        "monkaS": "https://cdn.7tv.app/emote/60ae3ec60583b28b704cbfc4/2x.webp",
-        "monkaW": "https://cdn.7tv.app/emote/60ae3eb60583b28b704cbfbf/2x.webp",
-        "OMEGALUL": "https://cdn.7tv.app/emote/60ae3eed0583b28b704cbfd6/2x.webp",
-        "catJAM": "https://cdn.7tv.app/emote/60ae3fd40583b28b704cc03b/2x.webp",
-        "pepeJAM": "https://cdn.7tv.app/emote/60ae40340583b28b704cc061/2x.webp",
-        "Pepega": "https://cdn.7tv.app/emote/60ae3f3a0583b28b704cbff9/2x.webp",
-        "widepeppoHappy": "https://cdn.7tv.app/emote/60ae3f860583b28b704cc01b/2x.webp",
-        "Sadge": "https://cdn.7tv.app/emote/60ae3f700583b28b704cc012/2x.webp",
-        "COPIUM": "https://cdn.7tv.app/emote/60ae40a40583b28b704cc090/2x.webp",
-        "EZ": "https://cdn.7tv.app/emote/60ae3f490583b28b704cc000/2x.webp",
-        "Clap": "https://cdn.7tv.app/emote/60ae3e970583b28b704cbfb2/2x.webp",
-        "AYAYA": "https://cdn.7tv.app/emote/60ae3f1c0583b28b704cbfee/2x.webp",
-        "NODDERS": "https://cdn.7tv.app/emote/60ae40e20583b28b704cc0aa/2x.webp",
-        "NOPERS": "https://cdn.7tv.app/emote/60ae40ec0583b28b704cc0ae/2x.webp",
-        "PepeSpit": "https://cdn.7tv.app/emote/60ae41080583b28b704cc0ba/2x.webp",
-        "modCheck": "https://cdn.7tv.app/emote/60ae40720583b28b704cc07a/2x.webp",
-        "PauseChamp": "https://cdn.7tv.app/emote/60ae3f5d0583b28b704cc009/2x.webp",
-        "FeelsStrongMan": "https://cdn.7tv.app/emote/60ae3ea80583b28b704cbfb8/2x.webp",
-        "HYPERCLAP": "https://cdn.7tv.app/emote/60ae414c0583b28b704cc0d6/2x.webp",
-        "LULW": "https://cdn.7tv.app/emote/60ae3ed70583b28b704cbfcc/2x.webp",
-        "GIGACHAD": "https://cdn.7tv.app/emote/60ae43ec0583b28b704cc1db/2x.webp",
-        "blobDance": "https://cdn.7tv.app/emote/60ae41660583b28b704cc0e2/2x.webp",
-        "RatJAM": "https://cdn.7tv.app/emote/60ae41880583b28b704cc0f0/2x.webp",
-        "DOGE": "https://cdn.7tv.app/emote/60ae419c0583b28b704cc0f8/2x.webp",
-        "5Head": "https://cdn.7tv.app/emote/60ae3e7b0583b28b704cbfa6/2x.webp",
-        "3Head": "https://cdn.7tv.app/emote/60ae3e890583b28b704cbfac/2x.webp",
-        "pepegaAim": "https://cdn.7tv.app/emote/60ae41c20583b28b704cc108/2x.webp",
-        "pepeL": "https://cdn.7tv.app/emote/60ae41e00583b28b704cc115/2x.webp",
-        "pepeW": "https://cdn.7tv.app/emote/60ae41ee0583b28b704cc11b/2x.webp"
+        "KEKW": "https://cdn.frankerfacez.com/emote/381875/2",
+        "OMEGALUL": "https://cdn.frankerfacez.com/emote/128054/2",
+        "catJAM": "https://cdn.frankerfacez.com/emote/564062/2",
+        "monkaW": "https://cdn.frankerfacez.com/emote/214681/2",
+        "monkaS": "https://cdn.frankerfacez.com/emote/130762/2",
+        "Pog": "https://cdn.frankerfacez.com/emote/210748/2",
+        "PogBlink": "https://cdn.frankerfacez.com/emote/381875/2",
+        "Pepega": "https://cdn.frankerfacez.com/emote/243789/2",
+        "Sadge": "https://cdn.frankerfacez.com/emote/425196/2",
+        "COPIUM": "https://cdn.frankerfacez.com/emote/563443/2",
+        "Clap": "https://cdn.frankerfacez.com/emote/298847/2",
+        "AYAYA": "https://cdn.frankerfacez.com/emote/162146/2",
+        "NODDERS": "https://cdn.frankerfacez.com/emote/720817/2",
+        "NOPERS": "https://cdn.frankerfacez.com/emote/725721/2",
+        "GIGACHAD": "https://cdn.frankerfacez.com/emote/354434/2",
+        "EZ": "https://cdn.frankerfacez.com/emote/185890/2",
+        "LULW": "https://cdn.frankerfacez.com/emote/139407/2",
+        "5Head": "https://cdn.frankerfacez.com/emote/239504/2",
+        "3Head": "https://cdn.frankerfacez.com/emote/274406/2",
+        "FeelsStrongMan": "https://cdn.frankerfacez.com/emote/64210/2",
+        "widepeppoHappy": "https://cdn.betterttv.net/emote/5e18237910389326f6e52233/2x",
+        "pepeJAM": "https://cdn.betterttv.net/emote/5b77ac3af7ab497359922e37/2x",
+        "blobDance": "https://cdn.betterttv.net/emote/5ada077451d4120ea3918426/2x",
+        "DOGE": "https://cdn.betterttv.net/emote/56e9f494fff3cc5c35e5287e/2x"
     };
 
     window._twitchEmoteMap = Object.assign({}, DEFAULT_EMOTES);
@@ -64,7 +56,16 @@
         img.title = name;
         img.className = 'twitch-custom-emote';
         img.loading = 'lazy';
-        img.style.cssText = 'height: 28px; min-width: 20px; vertical-align: middle; margin: -2px 3px; display: inline-block; object-fit: contain;';
+        img.crossOrigin = 'anonymous';
+        img.style.cssText = 'height: 1.8em; min-width: 1.4em; vertical-align: middle; margin: 0 2px; display: inline-block; object-fit: contain;';
+        img.onerror = function() {
+            // If image fails to load for any reason, gracefully fall back to plain text
+            // so a broken image icon is NEVER rendered in chat!
+            if (this.parentNode) {
+                const textNode = document.createTextNode(name);
+                this.parentNode.replaceChild(textNode, this);
+            }
+        };
         return img;
     }
 
@@ -101,8 +102,8 @@
         if (!el || processedNodes.has(el)) return;
         processedNodes.add(el);
 
-        // Find text fragments inside message
-        const textElements = el.querySelectorAll('.text-fragment, [data-a-target="chat-message-text"], span[data-test-selector="chat-line-message-body"]');
+        // Find text fragments inside message (works for mobile and desktop web)
+        const textElements = el.querySelectorAll('.text-fragment, [data-a-target="chat-message-text"], span[data-test-selector="chat-line-message-body"], .chat-author__message, .chat-message__message');
         const targets = textElements.length > 0 ? textElements : [el];
 
         targets.forEach(target => {
@@ -123,7 +124,7 @@
     }
 
     function scanAndReplaceAllChatEmotes() {
-        const messages = document.querySelectorAll('.chat-line__message, .chat-line, [data-test-selector="chat-line-message-body"], .stream-chat-line');
+        const messages = document.querySelectorAll('.chat-line__message, .chat-line, [data-test-selector="chat-line-message-body"], .stream-chat-line, .chat-message, [data-a-target="chat-line-message"]');
         messages.forEach(processMessageElement);
     }
 
@@ -135,10 +136,11 @@
                 for (let j = 0; j < addedNodes.length; j++) {
                     const node = addedNodes[j];
                     if (node.nodeType === Node.ELEMENT_NODE) {
-                        if (node.matches && (node.matches('.chat-line__message') || node.matches('.chat-line') || node.matches('[data-test-selector="chat-line-message-body"]'))) {
+                        const selector = '.chat-line__message, .chat-line, [data-test-selector="chat-line-message-body"], .chat-message, [data-a-target="chat-line-message"]';
+                        if (node.matches && node.matches(selector)) {
                             processMessageElement(node);
                         } else {
-                            const subMessages = node.querySelectorAll ? node.querySelectorAll('.chat-line__message, .chat-line, [data-test-selector="chat-line-message-body"]') : [];
+                            const subMessages = node.querySelectorAll ? node.querySelectorAll(selector) : [];
                             subMessages.forEach(processMessageElement);
                         }
                     }

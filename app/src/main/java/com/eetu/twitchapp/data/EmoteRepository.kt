@@ -35,6 +35,9 @@ class EmoteRepository {
 
         val resultMap = mutableMapOf<String, String>()
 
+        // 0. Include global emotes (BTTV & 7TV global sets)
+        resultMap.putAll(getGlobalEmotes())
+
         // 1. Fetch channel ID
         val userId = getTwitchUserId(cleanName)
 
@@ -74,13 +77,70 @@ class EmoteRepository {
         resultMap
     }
 
+    private fun getGlobalEmotes(): Map<String, String> {
+        if (globalEmoteCache.isNotEmpty()) return globalEmoteCache
+
+        // Fetch BTTV global emotes
+        try {
+            val req = Request.Builder()
+                .url("https://api.betterttv.net/3/cached/emotes/global")
+                .header("User-Agent", "TwitchApp-Android")
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val body = resp.body?.string() ?: ""
+                    val arr = JSONArray(body)
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.getJSONObject(i)
+                        val code = obj.optString("code")
+                        val id = obj.optString("id")
+                        if (code.isNotEmpty() && id.isNotEmpty()) {
+                            globalEmoteCache[code] = "https://cdn.betterttv.net/emote/$id/2x"
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.d("EmoteRepository", "BTTV global emotes failed: ${e.message}")
+        }
+
+        // Fetch 7TV global emotes
+        try {
+            val req = Request.Builder()
+                .url("https://7tv.io/v3/emote-sets/global")
+                .header("User-Agent", "TwitchApp-Android")
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val body = resp.body?.string() ?: ""
+                    val obj = JSONObject(body)
+                    val emotes = obj.optJSONArray("emotes")
+                    if (emotes != null) {
+                        for (i in 0 until emotes.length()) {
+                            val emote = emotes.getJSONObject(i)
+                            val name = emote.optString("name")
+                            val id = emote.optString("id")
+                            if (name.isNotEmpty() && id.isNotEmpty()) {
+                                globalEmoteCache[name] = "https://cdn.7tv.app/emote/$id/2x.webp"
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.d("EmoteRepository", "7TV global emotes failed: ${e.message}")
+        }
+
+        return globalEmoteCache
+    }
+
     private fun getTwitchUserId(channelName: String): String? {
         channelIdCache[channelName]?.let { return it }
 
-        // Use IVR API or GQL to resolve login -> user ID
+        // Primary: Use IVR API (login parameter)
         try {
             val request = Request.Builder()
-                .url("https://api.ivr.fi/v2/twitch/user?name=$channelName")
+                .url("https://api.ivr.fi/v2/twitch/user?login=$channelName")
                 .header("User-Agent", "TwitchApp-Android")
                 .build()
 
@@ -100,6 +160,26 @@ class EmoteRepository {
             }
         } catch (e: Exception) {
             Log.d("EmoteRepository", "IVR lookup failed, trying fallback: ${e.message}")
+        }
+
+        // Fallback: Use decapi.me
+        try {
+            val request = Request.Builder()
+                .url("https://decapi.me/twitch/id/$channelName")
+                .header("User-Agent", "TwitchApp-Android")
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    val id = response.body?.string()?.trim() ?: ""
+                    if (id.isNotEmpty() && id.all { it.isDigit() }) {
+                        channelIdCache[channelName] = id
+                        return id
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.d("EmoteRepository", "Decapi lookup failed: ${e.message}")
         }
 
         return null
@@ -149,7 +229,7 @@ class EmoteRepository {
                         val obj = arr.getJSONObject(i)
                         val code = obj.getString("code")
                         val id = obj.getString("id")
-                        map[code] = "https://cdn.betterttv.com/emote/$id/2x"
+                        map[code] = "https://cdn.betterttv.net/emote/$id/2x"
                     }
                 }
 

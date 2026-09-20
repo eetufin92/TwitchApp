@@ -59,7 +59,7 @@ fun TwitchWebView(
     onOpenEmoteSettings: () -> Unit = {},
     onOpenAdSettings: () -> Unit = {},
     onOpenAdBlockSettings: () -> Unit = {},
-    onOpenMultiStream: () -> Unit = {},
+    onOpenMultiStream: (String) -> Unit = {},
     isInPip: Boolean = false
 ) {
     val context = LocalContext.current
@@ -151,69 +151,12 @@ fun TwitchWebView(
         }
     }
 
-    Column(modifier = modifier.fillMaxSize()) {
-        // Sleek Minimal TopBar in non-fullscreen mode
-        if (!isFullscreen) {
-            TopAppBar(
-                title = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(24.dp)
-                                .clip(CircleShape)
-                                .background(TwitchPurple),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text("T", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                        }
-                        Text(
-                            text = if (currentChannel.isNotEmpty()) currentChannel else "TwitchApp",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp,
-                            color = Color.White
-                        )
-                    }
-                },
-                actions = {
-                    // Floating Chat toggle
-                    IconButton(onClick = { showFloatingChat = !showFloatingChat }) {
-                        Icon(
-                            Icons.Filled.Chat,
-                            contentDescription = "Floating Chat",
-                            tint = if (showFloatingChat) TwitchPurple else Color.White
-                        )
-                    }
-                    // Multistream button
-                    IconButton(onClick = onOpenMultiStream) {
-                        Icon(
-                            Icons.Filled.GridView,
-                            contentDescription = "Multistream",
-                            tint = TwitchTeal
-                        )
-                    }
-                    // Settings button (Direct and easy to find!)
-                    IconButton(onClick = onOpenSettings) {
-                        Icon(
-                            Icons.Filled.Settings,
-                            contentDescription = "Settings",
-                            tint = Color.White
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = TwitchDark)
-            )
-        }
-
-        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            // Main WebView
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { ctx ->
-                    val swipeLayout = androidx.swiperefreshlayout.widget.SwipeRefreshLayout(ctx)
-                    val webView = PersistentWebView(ctx).apply {
+    Box(modifier = modifier.fillMaxSize()) {
+        // Main WebView
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+                PersistentWebView(ctx).apply {
                         webViewInstance = this
                         setBackgroundColor(android.graphics.Color.BLACK)
                         layoutParams = ViewGroup.LayoutParams(
@@ -315,7 +258,6 @@ fun TwitchWebView(
 
                             override fun onPageFinished(view: WebView?, url: String?) {
                                 super.onPageFinished(view, url)
-                                swipeLayout.isRefreshing = false
                                 canGoBack = view?.canGoBack() ?: false
                                 currentUrl = url ?: ""
 
@@ -389,17 +331,8 @@ fun TwitchWebView(
                         val targetUrl = if (isTablet && initialUrl == "https://m.twitch.tv") "https://www.twitch.tv" else initialUrl
                         loadUrl(targetUrl)
                     }
-
-                    swipeLayout.addView(webView)
-                    swipeLayout.setOnRefreshListener {
-                        webView.reload()
-                    }
-                    swipeLayout
                 },
-                update = { swipeView ->
-                    val swipeLayout = swipeView as androidx.swiperefreshlayout.widget.SwipeRefreshLayout
-                    swipeLayout.isEnabled = !isFullscreen
-                }
+                update = { }
             )
 
             // Native Compose Ad Overlay (when ad is detected and enabled in settings)
@@ -518,7 +451,7 @@ fun TwitchWebView(
                             leadingIcon = { Icon(Icons.Filled.GridView, contentDescription = null, tint = TwitchTeal) },
                             onClick = {
                                 showFabMenu = false
-                                onOpenMultiStream()
+                                onOpenMultiStream(currentChannel)
                             }
                         )
                         DropdownMenuItem(

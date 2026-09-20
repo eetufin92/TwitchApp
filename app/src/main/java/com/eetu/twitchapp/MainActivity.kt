@@ -194,9 +194,10 @@ class MainActivity : ComponentActivity() {
                                             backStack.add(Destination.AdBlockSettings)
                                         }
                                     },
-                                    onNavigateToMultiStream = {
+                                    onNavigateToMultiStream = { channel ->
                                         if (!backStack.any { it is Destination.MultiStream }) {
-                                            backStack.add(Destination.MultiStream())
+                                            val initial = if (channel.isNotEmpty()) listOf(channel) else emptyList()
+                                            backStack.add(Destination.MultiStream(initial))
                                         }
                                     }
                                 )
@@ -206,7 +207,7 @@ class MainActivity : ComponentActivity() {
                             isPlayerVisible = false
                             NavEntry(key = destination) {
                                 MultiStreamScreen(
-                                    initialChannels = destination.initialChannels.ifEmpty { listOf("tarik", "shroud") },
+                                    initialChannels = destination.initialChannels,
                                     onNavigateBack = {
                                         if (backStack.size > 1) backStack.removeAt(backStack.size - 1)
                                     }
@@ -301,7 +302,7 @@ fun MainPlayerScreen(
     onNavigateToEmoteSettings: () -> Unit,
     onNavigateToAdSettings: () -> Unit,
     onNavigateToAdBlockSettings: () -> Unit,
-    onNavigateToMultiStream: () -> Unit
+    onNavigateToMultiStream: (String) -> Unit
 ) {
     val context = LocalContext.current
     val activity = remember(context) { context as? Activity }
