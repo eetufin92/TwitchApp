@@ -491,7 +491,6 @@ fun TwitchWebView(
             }
         }
     }
-}
 
 fun Context.findActivity(): Activity? {
     var context = this
