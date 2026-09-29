@@ -55,9 +55,18 @@ class MainActivity : ComponentActivity() {
         var currentIsPlaying = false
         var currentTitle: String? = null
         var currentStreamer: String? = null
-    }
+        var activePlayerViewModel: PlayerViewModel? = null
 
-    private var activePlayerViewModel: PlayerViewModel? = null
+        fun closeAllStreams() {
+            try {
+                activePlayerViewModel?.closePlayback()
+                activePlayerViewModel?.exoPlayer?.release()
+                activePlayerViewModel = null
+            } catch (e: Exception) {
+                // ignore
+            }
+        }
+    }
 
     override fun onStart() {
         super.onStart()
@@ -78,6 +87,12 @@ class MainActivity : ComponentActivity() {
         } else if (!isInPip.value) {
             activePlayerViewModel?.exoPlayer?.pause()
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        closeAllStreams()
+        PlaybackService.stop(this)
     }
 
     override fun onNewIntent(intent: Intent) {

@@ -20,6 +20,7 @@ import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -92,10 +93,15 @@ fun CollapsiblePlayerScaffold(
     val chatMessages by chatViewModel.messages.collectAsState()
     val chatEmotes by chatViewModel.emotes.collectAsState()
 
-    var showFloatingChat by remember { mutableStateOf(false) }
-    var showLandscapeSideChat by remember { mutableStateOf(true) }
-    var showPortraitChat by remember { mutableStateOf(true) }
+    var showFloatingChat by rememberSaveable { mutableStateOf(false) }
+    var showLandscapeSideChat by rememberSaveable { mutableStateOf(settingsManager.isSideChatVisible()) }
+    var showPortraitChat by rememberSaveable { mutableStateOf(true) }
     var isFullscreen by remember { mutableStateOf(false) }
+
+    fun updateLandscapeSideChat(visible: Boolean) {
+        showLandscapeSideChat = visible
+        settingsManager.setSideChatVisible(visible)
+    }
 
     LaunchedEffect(currentChannel, currentUser) {
         if (currentChannel.isNotEmpty()) {
@@ -318,10 +324,10 @@ fun CollapsiblePlayerScaffold(
                                 isChatVisible = showLandscapeSideChat || showFloatingChat,
                                 onToggleChat = {
                                     if (showLandscapeSideChat || showFloatingChat) {
-                                        showLandscapeSideChat = false
+                                        updateLandscapeSideChat(false)
                                         showFloatingChat = false
                                     } else {
-                                        showLandscapeSideChat = true
+                                        updateLandscapeSideChat(true)
                                         showFloatingChat = false
                                     }
                                 },
@@ -352,10 +358,10 @@ fun CollapsiblePlayerScaffold(
                                         channel = currentChannel,
                                         onOpenMultiStream = { onOpenMultiStream(currentChannel) },
                                         onSwitchToFloating = {
-                                            showLandscapeSideChat = false
+                                            updateLandscapeSideChat(false)
                                             showFloatingChat = true
                                         },
-                                        onClose = { showLandscapeSideChat = false }
+                                        onClose = { updateLandscapeSideChat(false) }
                                     )
                                     NativeChatView(
                                         messages = chatMessages,
@@ -442,7 +448,7 @@ fun CollapsiblePlayerScaffold(
                                     onToggleFloatingChat = {
                                         showFloatingChat = !showFloatingChat
                                         if (showFloatingChat) {
-                                            showLandscapeSideChat = false
+                                            updateLandscapeSideChat(false)
                                         }
                                     }
                                 )
@@ -558,7 +564,7 @@ fun CollapsiblePlayerScaffold(
                             availableChannels = listOf(currentChannel),
                             onDock = {
                                 showFloatingChat = false
-                                if (isLandscape) showLandscapeSideChat = true
+                                if (isLandscape) updateLandscapeSideChat(true)
                             },
                             onClose = { showFloatingChat = false },
                             modifier = Modifier.fillMaxSize()

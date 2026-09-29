@@ -6,11 +6,22 @@ package com.eetu.twitchapp.ui.player
 
 import android.view.ViewGroup
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -24,12 +35,20 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -93,6 +112,41 @@ fun NativeTwitchPlayer(
     var chatFeedbackJob by remember { mutableStateOf<Job?>(null) }
     val coroutineScope = rememberCoroutineScope()
 
+    val scaleAnim = remember { Animatable(1f) }
+    val offsetXAnim = remember { Animatable(0f) }
+    val offsetYAnim = remember { Animatable(0f) }
+    var containerSize by remember { mutableStateOf(IntSize.Zero) }
+    var isZooming by remember { mutableStateOf(false) }
+    var lastZoomTime by remember { mutableLongStateOf(0L) }
+    var showPillByTimer by remember { mutableStateOf(false) }
+
+    val isZoomed = scaleAnim.value > 1.05f
+
+    LaunchedEffect(isZooming, isZoomed, lastZoomTime) {
+        if (isZooming || isZoomed) {
+            showPillByTimer = true
+            delay(2500)
+            showPillByTimer = false
+        } else {
+            showPillByTimer = false
+        }
+    }
+
+    val showZoomPill = isZoomed && (isZooming || showPillByTimer || showControls)
+
+    // Reset zoom when stream changes or orientation switches
+    LaunchedEffect(channelName) {
+        scaleAnim.snapTo(1f)
+        offsetXAnim.snapTo(0f)
+        offsetYAnim.snapTo(0f)
+    }
+
+    LaunchedEffect(isLandscape) {
+        scaleAnim.snapTo(1f)
+        offsetXAnim.snapTo(0f)
+        offsetYAnim.snapTo(0f)
+    }
+
     fun triggerChatToggle() {
         val nextVisible = !isChatVisible
         onToggleChat()
@@ -142,11 +196,88 @@ fun NativeTwitchPlayer(
     Box(
         modifier = modifier
             .background(Color.Black)
+            .clipToBounds()
+            .onSizeChanged { containerSize = it }
+            .pointerInput(Unit) {
+                detectTwoFingerZoomAndPan(
+                    onGesture = { centroid, pan, zoom ->
+                        if (containerSize.width > 0 && containerSize.height > 0) {
+                            val oldScale = scaleAnim.value
+                            val newScale = (oldScale * zoom).coerceIn(0.85f, 5.5f)
+                            val effectiveZoom = newScale / oldScale
+
+                            val center = Offset(containerSize.width / 2f, containerSize.height / 2f)
+                            val curX = offsetXAnim.value
+                            val curY = offsetYAnim.value
+
+                            val newX = curX - (centroid.x - center.x - curX) * (effectiveZoom - 1f) + pan.x
+                            val newY = curY - (centroid.y - center.y - curY) * (effectiveZoom - 1f) + pan.y
+
+                            val maxPanX = (containerSize.width * (newScale - 1f) / 2f).coerceAtLeast(0f)
+                            val maxPanY = (containerSize.height * (newScale - 1f) / 2f).coerceAtLeast(0f)
+
+                            val overscrollLimitX = maxPanX + containerSize.width * 0.15f
+                            val overscrollLimitY = maxPanY + containerSize.height * 0.15f
+
+                            coroutineScope.launch {
+                                scaleAnim.snapTo(newScale)
+                                offsetXAnim.snapTo(newX.coerceIn(-overscrollLimitX, overscrollLimitX))
+                                offsetYAnim.snapTo(newY.coerceIn(-overscrollLimitY, overscrollLimitY))
+                            }
+                            isZooming = true
+                            lastZoomTime = System.currentTimeMillis()
+                        }
+                    },
+                    onGestureEnd = {
+                        isZooming = false
+                        lastZoomTime = System.currentTimeMillis()
+                        if (containerSize.width > 0 && containerSize.height > 0) {
+                            val curScale = scaleAnim.value
+                            val curX = offsetXAnim.value
+                            val curY = offsetYAnim.value
+
+                            if (curScale < 1.05f) {
+                                coroutineScope.launch {
+                                    launch { scaleAnim.animateTo(1f, tween(250, easing = FastOutSlowInEasing)) }
+                                    launch { offsetXAnim.animateTo(0f, tween(250, easing = FastOutSlowInEasing)) }
+                                    launch { offsetYAnim.animateTo(0f, tween(250, easing = FastOutSlowInEasing)) }
+                                }
+                            } else {
+                                val targetScale = curScale.coerceIn(1.0f, 5.0f)
+                                val maxPanX = (containerSize.width * (targetScale - 1f) / 2f).coerceAtLeast(0f)
+                                val maxPanY = (containerSize.height * (targetScale - 1f) / 2f).coerceAtLeast(0f)
+                                val targetX = curX.coerceIn(-maxPanX, maxPanX)
+                                val targetY = curY.coerceIn(-maxPanY, maxPanY)
+
+                                coroutineScope.launch {
+                                    launch { scaleAnim.animateTo(targetScale, tween(250, easing = FastOutSlowInEasing)) }
+                                    launch { offsetXAnim.animateTo(targetX, tween(250, easing = FastOutSlowInEasing)) }
+                                    launch { offsetYAnim.animateTo(targetY, tween(250, easing = FastOutSlowInEasing)) }
+                                }
+                            }
+                        }
+                    }
+                )
+            }
             .pointerInput(Unit) {
                 detectTapGestures(
                     onTap = { showControls = !showControls },
                     onDoubleTap = {
-                        triggerChatToggle()
+                        if (scaleAnim.value > 1.05f) {
+                            coroutineScope.launch {
+                                launch { scaleAnim.animateTo(1f, tween(250, easing = FastOutSlowInEasing)) }
+                                launch { offsetXAnim.animateTo(0f, tween(250, easing = FastOutSlowInEasing)) }
+                                launch { offsetYAnim.animateTo(0f, tween(250, easing = FastOutSlowInEasing)) }
+                            }
+                            chatFeedbackJob?.cancel()
+                            chatFeedbackText = "Zoom reset (1.0x)"
+                            chatFeedbackJob = coroutineScope.launch {
+                                delay(1000)
+                                chatFeedbackText = null
+                            }
+                        } else {
+                            triggerChatToggle()
+                        }
                     }
                 )
             }
@@ -172,7 +303,14 @@ fun NativeTwitchPlayer(
                     playerView.resizeMode = resizeMode
                     playerView.keepScreenOn = true
                 },
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        scaleX = scaleAnim.value
+                        scaleY = scaleAnim.value
+                        translationX = offsetXAnim.value
+                        translationY = offsetYAnim.value
+                    }
             )
         } else {
             // Audio Only Mode UI
@@ -416,6 +554,60 @@ fun NativeTwitchPlayer(
             }
         }
 
+        // Floating Zoom Level Indicator Pill
+        AnimatedVisibility(
+            visible = showZoomPill,
+            enter = fadeIn(tween(150)),
+            exit = fadeOut(tween(300)),
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = if (adBreakActive && isShowAdOverlay) 16.dp else if (adBreakActive) 54.dp else 16.dp)
+        ) {
+            Surface(
+                color = Color.Black.copy(alpha = 0.82f),
+                shape = RoundedCornerShape(16.dp),
+                border = BorderStroke(1.dp, TwitchPurple.copy(alpha = 0.7f)),
+                shadowElevation = 6.dp,
+                modifier = Modifier.clickable {
+                    coroutineScope.launch {
+                        launch { scaleAnim.animateTo(1f, tween(250, easing = FastOutSlowInEasing)) }
+                        launch { offsetXAnim.animateTo(0f, tween(250, easing = FastOutSlowInEasing)) }
+                        launch { offsetYAnim.animateTo(0f, tween(250, easing = FastOutSlowInEasing)) }
+                    }
+                    chatFeedbackJob?.cancel()
+                    chatFeedbackText = "Zoom reset (1.0x)"
+                    chatFeedbackJob = coroutineScope.launch {
+                        delay(1000)
+                        chatFeedbackText = null
+                    }
+                }
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.ZoomIn,
+                        contentDescription = "Zoomed",
+                        tint = TwitchPurple,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = String.format(java.util.Locale.US, "%.1fx", scaleAnim.value),
+                        color = Color.White,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "• Reset",
+                        color = TwitchTextDim,
+                        fontSize = 11.sp
+                    )
+                }
+            }
+        }
+
         // Overlay Controls (Fade In / Out)
         AnimatedVisibility(
             visible = showControls,
@@ -652,16 +844,21 @@ fun NativeTwitchPlayer(
 
     // Modal Bottom Sheet for Playback Settings
     if (showSettingsSheet) {
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
         ModalBottomSheet(
             onDismissRequest = { showSettingsSheet = false },
+            sheetState = sheetState,
             containerColor = TwitchDarkCard,
             dragHandle = { BottomSheetDefaults.DragHandle(color = TwitchTextDim) }
         ) {
+            val scrollState = rememberScrollState()
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .verticalScroll(scrollState)
                     .padding(horizontal = 20.dp, vertical = 8.dp)
-                    .padding(bottom = 24.dp),
+                    .navigationBarsPadding()
+                    .padding(bottom = 36.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 Text(
@@ -685,7 +882,14 @@ fun NativeTwitchPlayer(
                             fontSize = 14.sp
                         )
                         Text(
-                            text = if (isAudioOnly) "Audio Only" else selectedQuality.replace("auto", "Auto"),
+                            text = if (isAudioOnly) {
+                                "Audio Only"
+                            } else {
+                                val currentOpt = availableQualities.find {
+                                    it.id == selectedQuality || (it.id == "source" && selectedQuality.startsWith("${it.height}p"))
+                                }
+                                currentOpt?.label ?: selectedQuality.replace("auto", "Auto")
+                            },
                             color = TwitchPurple,
                             fontWeight = FontWeight.Bold,
                             fontSize = 13.sp
@@ -699,6 +903,8 @@ fun NativeTwitchPlayer(
                         items(availableQualities) { qualityOpt ->
                             val isSelected = if (qualityOpt.id == "audio_only") {
                                 isAudioOnly
+                            } else if (qualityOpt.id == "source") {
+                                !isAudioOnly && (selectedQuality == "source" || selectedQuality.startsWith("${qualityOpt.height}p"))
                             } else {
                                 !isAudioOnly && selectedQuality == qualityOpt.id
                             }
@@ -940,5 +1146,54 @@ private fun formatViewers(count: Int): String {
         count >= 1_000_000 -> String.format("%.1fM", count / 1_000_000.0)
         count >= 1_000 -> String.format("%.1fK", count / 1_000.0)
         else -> count.toString()
+    }
+}
+
+private suspend fun PointerInputScope.detectTwoFingerZoomAndPan(
+    onGesture: (centroid: Offset, pan: Offset, zoom: Float) -> Unit,
+    onGestureEnd: () -> Unit
+) {
+    awaitEachGesture {
+        awaitFirstDown(requireUnconsumed = false)
+        var isTransforming = false
+        var hasMultiplePointers = false
+
+        do {
+            val event = awaitPointerEvent(PointerEventPass.Initial)
+            val pressedChanges = event.changes.filter { it.pressed }
+            val pressedCount = pressedChanges.size
+
+            if (pressedCount >= 2) {
+                hasMultiplePointers = true
+                val zoomChange = event.calculateZoom()
+                val panChange = event.calculatePan()
+                val centroid = event.calculateCentroid(useCurrent = false)
+
+                if (zoomChange != 1f || panChange != Offset.Zero) {
+                    isTransforming = true
+                    onGesture(centroid, panChange, zoomChange)
+                }
+
+                // Consume all pointer changes so single taps, double taps, and parent draggables are suppressed
+                event.changes.forEach {
+                    it.consume()
+                }
+            } else {
+                if (hasMultiplePointers) {
+                    // Finger lifted after multi-touch; continue consuming until all pointers are released
+                    event.changes.forEach {
+                        it.consume()
+                    }
+                }
+                if (pressedCount < 2 && isTransforming) {
+                    isTransforming = false
+                    onGestureEnd()
+                }
+            }
+        } while (event.changes.any { it.pressed })
+
+        if (isTransforming) {
+            onGestureEnd()
+        }
     }
 }

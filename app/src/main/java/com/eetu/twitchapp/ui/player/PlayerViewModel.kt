@@ -20,6 +20,7 @@ import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import com.eetu.twitchapp.data.TwitchSettingsManager
+import com.eetu.twitchapp.data.auth.TwitchAuthManager
 import com.eetu.twitchapp.data.model.LiveStreamItem
 import com.eetu.twitchapp.data.network.TwitchGqlClient
 import java.io.ByteArrayOutputStream
@@ -111,7 +112,8 @@ data class VideoTrackOption(
     val width: Int = 0,
     val height: Int = 0,
     val frameRate: Float = 0f,
-    val bitrate: Int = 0
+    val bitrate: Int = 0,
+    val isSource: Boolean = false
 )
 
 class PlayerViewModel(
@@ -124,6 +126,7 @@ class PlayerViewModel(
     }
 
     private val settingsManager = TwitchSettingsManager(application)
+    private val authManager = TwitchAuthManager.getInstance(application)
 
     private val _availableQualities = MutableStateFlow<List<VideoTrackOption>>(
         listOf(VideoTrackOption("auto", "Auto"))
@@ -280,23 +283,40 @@ class PlayerViewModel(
             }
         }
 
-        // Sort descending by height, then fps
-        videoFormats.distinctBy { "${it.height}p${it.frameRate.toInt()}" }
-            .sortedWith(compareByDescending<Format> { it.height }.thenByDescending { it.frameRate })
-            .forEach { format ->
-                val fps = if (format.frameRate > 30f) "${format.frameRate.toInt()}" else ""
-                val label = if (format.height > 0) "${format.height}p$fps" else (format.label ?: "Video Track")
-                qualities.add(
-                    VideoTrackOption(
-                        id = "${format.height}p$fps",
-                        label = label,
-                        width = format.width,
-                        height = format.height,
-                        frameRate = format.frameRate,
-                        bitrate = format.bitrate
-                    )
-                )
+        // Sort descending by height, then fps, then bitrate
+        val sortedFormats = videoFormats
+            .distinctBy { "${it.height}p${it.frameRate.toInt()}" }
+            .sortedWith(
+                compareByDescending<Format> { it.height }
+                    .thenByDescending { it.frameRate }
+                    .thenByDescending { it.bitrate }
+            )
+
+        sortedFormats.forEachIndexed { index, format ->
+            val fps = if (format.frameRate > 30f) "${format.frameRate.toInt()}" else ""
+            val isSource = index == 0 ||
+                format.id?.equals("chunked", ignoreCase = true) == true ||
+                format.label?.contains("source", ignoreCase = true) == true
+
+            val resStr = if (format.height > 0) "${format.height}p$fps" else ""
+            val label = if (isSource) {
+                if (resStr.isNotEmpty()) "$resStr (Source)" else (format.label ?: "Source")
+            } else {
+                if (resStr.isNotEmpty()) resStr else (format.label ?: "Video Track")
             }
+
+            qualities.add(
+                VideoTrackOption(
+                    id = if (isSource) "source" else "${format.height}p$fps",
+                    label = label,
+                    width = format.width,
+                    height = format.height,
+                    frameRate = format.frameRate,
+                    bitrate = format.bitrate,
+                    isSource = isSource
+                )
+            )
+        }
 
         qualities.add(VideoTrackOption("audio_only", "Audio Only"))
         _availableQualities.value = qualities
@@ -332,10 +352,24 @@ class PlayerViewModel(
                     .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
                     .build()
             }
+            "source" -> {
+                _isAudioOnly.value = false
+                settingsManager.setAudioOnly(false)
+                val sourceOpt = _availableQualities.value.find { it.id == "source" || it.isSource }
+                val targetHeight = sourceOpt?.height?.takeIf { it > 0 } ?: Int.MAX_VALUE
+                exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+                    .buildUpon()
+                    .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
+                    .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+                    .setMaxVideoSize(Int.MAX_VALUE, targetHeight)
+                    .setMinVideoSize(0, 0)
+                    .build()
+            }
             else -> {
                 _isAudioOnly.value = false
                 settingsManager.setAudioOnly(false)
                 val opt = _availableQualities.value.find { it.id == qualityId }
+                    ?: _availableQualities.value.find { it.isSource && qualityId.startsWith("${it.height}p") }
                 if (opt != null && opt.height > 0) {
                     exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
                         .buildUpon()
@@ -467,7 +501,7 @@ class PlayerViewModel(
                     }
                 }
 
-                val tokenResult = gqlClient.getStreamPlaybackAccessToken(clean)
+                val tokenResult = gqlClient.getStreamPlaybackAccessToken(clean, authManager.getAuthToken())
                 if (tokenResult == null) {
                     _errorMessage.value = "Failed to obtain playback token for $clean. Channel might be offline."
                     _isLoading.value = false

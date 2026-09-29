@@ -32,6 +32,7 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import com.eetu.twitchapp.data.auth.TwitchAuthManager
 import com.eetu.twitchapp.data.network.TwitchGqlClient
 import com.eetu.twitchapp.ui.components.FloatingResizableChat
 import com.eetu.twitchapp.ui.theme.*
@@ -318,6 +319,7 @@ fun StreamTile(
 ) {
     val context = LocalContext.current
     val gqlClient = remember { TwitchGqlClient() }
+    val authManager = remember { TwitchAuthManager.getInstance(context) }
     var isLoading by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
@@ -341,7 +343,7 @@ fun StreamTile(
     LaunchedEffect(channel) {
         isLoading = true
         errorMessage = null
-        val tokenResult = gqlClient.getStreamPlaybackAccessToken(channel)
+        val tokenResult = gqlClient.getStreamPlaybackAccessToken(channel, authManager.getAuthToken())
         if (tokenResult != null) {
             val mediaItem = MediaItem.fromUri(Uri.parse(tokenResult.masterPlaylistUrl))
             exoPlayer.setMediaItem(mediaItem)

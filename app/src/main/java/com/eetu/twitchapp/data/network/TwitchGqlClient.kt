@@ -31,7 +31,10 @@ class TwitchGqlClient(
     /**
      * Obtains the streamPlaybackAccessToken and constructs the Usher master .m3u8 playlist URL.
      */
-    suspend fun getStreamPlaybackAccessToken(channelName: String): PlaybackTokenResult? = withContext(Dispatchers.IO) {
+    suspend fun getStreamPlaybackAccessToken(
+        channelName: String,
+        authToken: String? = null
+    ): PlaybackTokenResult? = withContext(Dispatchers.IO) {
         val cleanChannel = channelName.trim().lowercase()
         if (cleanChannel.isEmpty()) return@withContext null
 
@@ -54,12 +57,17 @@ class TwitchGqlClient(
                 })
             }
 
-            val request = Request.Builder()
+            val requestBuilder = Request.Builder()
                 .url(GQL_URL)
                 .addHeader("Client-ID", CLIENT_ID)
                 .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
                 .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
-                .build()
+
+            if (!authToken.isNullOrEmpty()) {
+                requestBuilder.addHeader("Authorization", "OAuth $authToken")
+            }
+
+            val request = requestBuilder.build()
 
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
@@ -80,7 +88,7 @@ class TwitchGqlClient(
                     return@withContext null
                 }
 
-                // Construct Usher master playlist URL
+                // Construct Usher master playlist URL with modern codecs supported for 1440p / Enhanced Broadcasting
                 val masterPlaylistUrl = Uri.parse("$USHER_BASE_URL$cleanChannel.m3u8").buildUpon()
                     .appendQueryParameter("token", tokenValue)
                     .appendQueryParameter("sig", signature)
@@ -88,6 +96,7 @@ class TwitchGqlClient(
                     .appendQueryParameter("allow_audio_only", "true")
                     .appendQueryParameter("fast_bread", "true")
                     .appendQueryParameter("player_backend", "mediaplayer")
+                    .appendQueryParameter("supported_codecs", "h264,h265,av1")
                     .build()
                     .toString()
 

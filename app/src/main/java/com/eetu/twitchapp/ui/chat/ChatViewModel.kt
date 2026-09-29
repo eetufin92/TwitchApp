@@ -5,6 +5,8 @@ import androidx.lifecycle.viewModelScope
 import com.eetu.twitchapp.data.EmoteRepository
 import com.eetu.twitchapp.data.chat.TwitchIrcClient
 import com.eetu.twitchapp.data.model.ChatMessage
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -33,10 +35,34 @@ class ChatViewModel(
     private var currentAuthToken: String? = null
     private var currentUserLogin: String? = null
 
+    private val pendingBuffer = mutableListOf<ChatMessage>()
+    private var flushJob: Job? = null
+
     init {
         viewModelScope.launch {
             ircClient.messages.collect { newMsg ->
-                _messages.value = (_messages.value + newMsg).takeLast(150)
+                synchronized(pendingBuffer) {
+                    pendingBuffer.add(newMsg)
+                }
+                if (flushJob == null || !flushJob!!.isActive) {
+                    flushJob = viewModelScope.launch {
+                        while (true) {
+                            delay(40)
+                            val toAdd = synchronized(pendingBuffer) {
+                                if (pendingBuffer.isEmpty()) return@launch
+                                val list = pendingBuffer.toList()
+                                pendingBuffer.clear()
+                                list
+                            }
+                            val current = _messages.value
+                            val existingIds = current.mapTo(HashSet()) { it.id }
+                            val uniqueToAdd = toAdd.filter { existingIds.add(it.id) }
+                            if (uniqueToAdd.isNotEmpty()) {
+                                _messages.value = (current + uniqueToAdd).takeLast(250)
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -51,6 +77,10 @@ class ChatViewModel(
         _activeChannel.value = clean
         currentAuthToken = authToken
         currentUserLogin = userLogin
+        synchronized(pendingBuffer) {
+            pendingBuffer.clear()
+        }
+        flushJob?.cancel()
         _messages.value = emptyList()
 
         // Connect to IRC WebSocket with auth if available
@@ -84,7 +114,8 @@ class ChatViewModel(
                 timestamp = System.currentTimeMillis()
             )
             viewModelScope.launch {
-                _messages.value = (_messages.value + myMsg).takeLast(150)
+                val current = _messages.value
+                _messages.value = (current + myMsg).takeLast(250)
             }
         }
         return sent

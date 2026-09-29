@@ -82,7 +82,7 @@ fun NativeChatView(
     LaunchedEffect(isLandscape) {
         userScrolledUp = false
         if (messages.isNotEmpty()) {
-            listState.scrollToItem(messages.size - 1)
+            listState.scrollToItem(messages.lastIndex)
         }
     }
 
@@ -107,26 +107,37 @@ fun NativeChatView(
         focusManager.clearFocus()
     }
 
-    // Only detect scroll when user is PHYSICALLY dragging with touch and releases
+    // Detect user scrolling with touch drag and settling after momentum fling
     val isDragged by listState.interactionSource.collectIsDraggedAsState()
 
-    LaunchedEffect(isDragged) {
+    LaunchedEffect(isDragged, listState.isScrollInProgress) {
         if (isDragged) {
             wasDragged = true
-        } else if (wasDragged) {
+        } else if (wasDragged && !listState.isScrollInProgress) {
             wasDragged = false
             val visibleItems = listState.layoutInfo.visibleItemsInfo
             val totalItems = listState.layoutInfo.totalItemsCount
-            val atBottom = if (visibleItems.isEmpty() || totalItems == 0) true
-                           else visibleItems.last().index >= totalItems - 2
+            val atBottom = !listState.canScrollForward ||
+                    visibleItems.isEmpty() ||
+                    totalItems == 0 ||
+                    (visibleItems.last().index >= totalItems - 2)
             userScrolledUp = !atBottom
+            if (atBottom && messages.isNotEmpty()) {
+                listState.scrollToItem(messages.lastIndex)
+            }
         }
     }
 
     // Auto-scroll to bottom on new messages whenever user hasn't explicitly scrolled up
-    LaunchedEffect(messages.size, userScrolledUp) {
-        if (!userScrolledUp && messages.isNotEmpty()) {
-            listState.scrollToItem(messages.size - 1)
+    LaunchedEffect(messages.lastOrNull()?.id, userScrolledUp) {
+        if (!userScrolledUp && !isDragged && messages.isNotEmpty()) {
+            listState.scrollToItem(messages.lastIndex)
+        }
+    }
+
+    LaunchedEffect(isImeVisible) {
+        if (isImeVisible && !userScrolledUp && messages.isNotEmpty()) {
+            listState.scrollToItem(messages.lastIndex)
         }
     }
 
@@ -228,7 +239,7 @@ fun NativeChatView(
                             userScrolledUp = false
                             coroutineScope.launch {
                                 if (messages.isNotEmpty()) {
-                                    listState.scrollToItem(messages.size - 1)
+                                    listState.scrollToItem(messages.lastIndex)
                                 }
                             }
                         }

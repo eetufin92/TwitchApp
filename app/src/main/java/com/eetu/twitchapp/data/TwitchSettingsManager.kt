@@ -70,6 +70,6 @@ class TwitchSettingsManager(context: Context) {
     fun isAudioOnly(): Boolean = prefs.getBoolean(KEY_AUDIO_ONLY, false)
     fun setAudioOnly(enabled: Boolean) = prefs.edit().putBoolean(KEY_AUDIO_ONLY, enabled).apply()
 
-    fun isSideChatVisible(): Boolean = prefs.getBoolean(KEY_SIDE_CHAT_VISIBLE, false)
+    fun isSideChatVisible(): Boolean = prefs.getBoolean(KEY_SIDE_CHAT_VISIBLE, true)
     fun setSideChatVisible(visible: Boolean) = prefs.edit().putBoolean(KEY_SIDE_CHAT_VISIBLE, visible).apply()
 }
