@@ -5,22 +5,105 @@ import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.TransferListener
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import com.eetu.twitchapp.data.TwitchSettingsManager
 import com.eetu.twitchapp.data.model.LiveStreamItem
 import com.eetu.twitchapp.data.network.TwitchGqlClient
+import java.io.ByteArrayOutputStream
+import kotlin.math.roundToInt
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+
+class TwitchAdDetectingDataSourceFactory(
+    private val upstreamFactory: DataSource.Factory,
+    private val onAdDetected: (Boolean, String, Int) -> Unit
+) : DataSource.Factory {
+    override fun createDataSource(): DataSource {
+        return TwitchAdDetectingDataSource(upstreamFactory.createDataSource(), onAdDetected)
+    }
+}
+
+class TwitchAdDetectingDataSource(
+    private val upstream: DataSource,
+    private val onAdDetected: (Boolean, String, Int) -> Unit
+) : DataSource {
+    private var isPlaylist = false
+    private val playlistBuffer = ByteArrayOutputStream()
+
+    override fun addTransferListener(transferListener: TransferListener) {
+        upstream.addTransferListener(transferListener)
+    }
+
+    override fun open(dataSpec: DataSpec): Long {
+        val path = dataSpec.uri.path ?: ""
+        isPlaylist = path.endsWith(".m3u8") || path.contains("m3u8")
+        if (isPlaylist) {
+            playlistBuffer.reset()
+        }
+        return upstream.open(dataSpec)
+    }
+
+    override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+        val bytesRead = upstream.read(buffer, offset, length)
+        if (isPlaylist && bytesRead > 0) {
+            playlistBuffer.write(buffer, offset, bytesRead)
+        }
+        return bytesRead
+    }
+
+    override fun getUri(): Uri? = upstream.uri
+
+    override fun getResponseHeaders(): Map<String, List<String>> = upstream.responseHeaders
+
+    override fun close() {
+        if (isPlaylist && playlistBuffer.size() > 0) {
+            try {
+                val content = playlistBuffer.toString("UTF-8")
+                parsePlaylistForAds(content)
+            } catch (e: Exception) {
+                // Ignore parse errors
+            }
+        }
+        upstream.close()
+    }
+
+    private fun parsePlaylistForAds(content: String) {
+        val hasAd = content.contains("stitched-ad") ||
+                content.contains("twitch-stitched-ad") ||
+                content.contains("EXT-X-TWITCH-PREVIEW-AD")
+
+        var adId = ""
+        var duration = 30
+        if (hasAd) {
+            val idMatch = Regex("""ID="([^"]+)"""").find(content)
+            if (idMatch != null) {
+                adId = idMatch.groupValues[1]
+            }
+            val match = Regex("""(?:PLANNED-)?DURATION=([0-9.]+)""").find(content)
+            if (match != null) {
+                duration = match.groupValues[1].toDoubleOrNull()?.roundToInt() ?: 30
+            }
+        }
+        onAdDetected(hasAd, adId, duration)
+    }
+}
 
 data class VideoTrackOption(
     val id: String,
@@ -62,18 +145,46 @@ class PlayerViewModel(
     private val _isPipEnabled = MutableStateFlow(settingsManager.isPipEnabled())
     val isPipEnabled: StateFlow<Boolean> = _isPipEnabled.asStateFlow()
 
+    private val _adBreakActive = MutableStateFlow(false)
+    val adBreakActive: StateFlow<Boolean> = _adBreakActive.asStateFlow()
+
+    private val _adBreakRemaining = MutableStateFlow(0)
+    val adBreakRemaining: StateFlow<Int> = _adBreakRemaining.asStateFlow()
+
+    private val _adBreakDuration = MutableStateFlow(0)
+    val adBreakDuration: StateFlow<Int> = _adBreakDuration.asStateFlow()
+
+    private val _isAutoMuteAds = MutableStateFlow(settingsManager.isAutoMuteAds())
+    val isAutoMuteAds: StateFlow<Boolean> = _isAutoMuteAds.asStateFlow()
+
+    private val _isShowAdOverlay = MutableStateFlow(settingsManager.isShowAdOverlay())
+    val isShowAdOverlay: StateFlow<Boolean> = _isShowAdOverlay.asStateFlow()
+
+    private var adCountdownJob: Job? = null
+    private var currentAdId: String = ""
+    private var previousVolume: Float = 1.0f
+    private var stallRecoveryJob: Job? = null
+
     val exoPlayer: ExoPlayer by lazy {
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                2_000,  // min buffer 2s for live low latency
-                10_000, // max buffer 10s
-                1_000,  // buffer for playback 1s
-                2_000   // buffer for playback after rebuffer 2s
+                15_000, // min buffer 15s (allows buffering ahead available segments in live window)
+                30_000, // max buffer 30s
+                1_000,  // buffer for playback 1s (fast startup)
+                1_500   // buffer for playback after rebuffer 1.5s (quick recovery from stall)
             )
+            .setBackBuffer(5_000, true)
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
+
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
             .build()
 
         ExoPlayer.Builder(application)
             .setLoadControl(loadControl)
+            .setAudioAttributes(audioAttributes, true)
             .setWakeMode(C.WAKE_MODE_NETWORK)
             .setHandleAudioBecomingNoisy(true)
             .build().apply {
@@ -82,17 +193,56 @@ class PlayerViewModel(
                 addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(state: Int) {
                         _playbackState.value = state
+                        if (state == Player.STATE_BUFFERING && playWhenReady) {
+                            scheduleStallRecovery()
+                        } else {
+                            cancelStallRecovery()
+                        }
                     }
 
                     override fun onIsPlayingChanged(isPlaying: Boolean) {
                         _isPlaying.value = isPlaying
+                        if (isPlaying) {
+                            cancelStallRecovery()
+                        }
                     }
 
                     override fun onTracksChanged(tracks: Tracks) {
                         extractVideoQualities(tracks)
                     }
+
+                    override fun onPlayerError(error: PlaybackException) {
+                        Log.e(TAG, "ExoPlayer playback error: ${error.errorCodeName}", error)
+                        if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
+                            seekToDefaultPosition()
+                            prepare()
+                            play()
+                        } else {
+                            // Retry playback after a brief delay for transient network drops
+                            prepare()
+                            play()
+                        }
+                    }
                 })
             }
+    }
+
+    private fun scheduleStallRecovery() {
+        stallRecoveryJob?.cancel()
+        stallRecoveryJob = viewModelScope.launch {
+            delay(5000)
+            if (_playbackState.value == Player.STATE_BUFFERING && exoPlayer.playWhenReady && _currentChannel.value.isNotEmpty()) {
+                Log.w(TAG, "Stall detected in live stream, auto-seeking to live edge...")
+                exoPlayer.seekToDefaultPosition()
+                exoPlayer.prepare()
+                exoPlayer.play()
+            }
+        }
+    }
+
+    private fun cancelStallRecovery() {
+        stallRecoveryJob?.cancel()
+        stallRecoveryJob = null
     }
 
     private val _currentChannel = MutableStateFlow("")
@@ -191,7 +341,7 @@ class PlayerViewModel(
                         .buildUpon()
                         .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
                         .setMaxVideoSize(Int.MAX_VALUE, opt.height)
-                        .setMinVideoSize(0, opt.height)
+                        .setMinVideoSize(0, 0)
                         .build()
                 }
             }
@@ -228,6 +378,71 @@ class PlayerViewModel(
         settingsManager.setPipEnabled(enabled)
     }
 
+    fun setAutoMuteAds(enabled: Boolean) {
+        _isAutoMuteAds.value = enabled
+        settingsManager.setAutoMuteAds(enabled)
+    }
+
+    fun setShowAdOverlay(enabled: Boolean) {
+        _isShowAdOverlay.value = enabled
+        settingsManager.setShowAdOverlay(enabled)
+    }
+
+    private fun handleAdDetection(hasAd: Boolean, adId: String, durationSeconds: Int) {
+        viewModelScope.launch {
+            if (hasAd) {
+                // If this is a new ad break or a distinct second ad in a pod
+                val isNewAd = !_adBreakActive.value || (adId.isNotEmpty() && adId != currentAdId)
+                if (isNewAd) {
+                    if (adId.isNotEmpty()) {
+                        currentAdId = adId
+                    }
+                    _adBreakActive.value = true
+                    val dur = if (durationSeconds > 0) durationSeconds else 30
+                    _adBreakDuration.value = dur
+                    _adBreakRemaining.value = dur
+
+                    if (_isAutoMuteAds.value) {
+                        previousVolume = exoPlayer.volume
+                        exoPlayer.volume = 0f
+                    }
+
+                    adCountdownJob?.cancel()
+                    adCountdownJob = launch {
+                        var remaining = dur
+                        while (remaining > 0) {
+                            delay(1000)
+                            remaining--
+                            _adBreakRemaining.value = remaining
+                        }
+                        // Allow brief grace period for next segment, then auto-dismiss if still 0
+                        delay(4000)
+                        if (_adBreakRemaining.value == 0 && _adBreakActive.value) {
+                            endAdBreak()
+                        }
+                    }
+                }
+            } else {
+                if (_adBreakActive.value) {
+                    endAdBreak()
+                }
+            }
+        }
+    }
+
+    private fun endAdBreak() {
+        if (_adBreakActive.value) {
+            _adBreakActive.value = false
+            _adBreakRemaining.value = 0
+            currentAdId = ""
+            adCountdownJob?.cancel()
+            adCountdownJob = null
+            if (_isAutoMuteAds.value && exoPlayer.volume == 0f) {
+                exoPlayer.volume = if (previousVolume > 0f) previousVolume else 1.0f
+            }
+        }
+    }
+
     fun playChannel(channelName: String) {
         val clean = channelName.trim().lowercase()
         if (clean.isEmpty()) return
@@ -237,6 +452,7 @@ class PlayerViewModel(
             return
         }
 
+        endAdBreak()
         _currentChannel.value = clean
         _isLoading.value = true
         _errorMessage.value = null
@@ -258,10 +474,14 @@ class PlayerViewModel(
                     return@launch
                 }
 
-                val dataSourceFactory = DefaultHttpDataSource.Factory()
+                val httpFactory = DefaultHttpDataSource.Factory()
                     .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
                     .setConnectTimeoutMs(8000)
                     .setReadTimeoutMs(8000)
+
+                val dataSourceFactory = TwitchAdDetectingDataSourceFactory(httpFactory) { hasAd, adId, dur ->
+                    handleAdDetection(hasAd, adId, dur)
+                }
 
                 val playlistUrl = if (!_isLowLatency.value) {
                     tokenResult.masterPlaylistUrl.replace("fast_bread=true", "fast_bread=false")
@@ -274,13 +494,19 @@ class PlayerViewModel(
                     .setLiveConfiguration(
                         if (_isLowLatency.value) {
                             MediaItem.LiveConfiguration.Builder()
-                                .setTargetOffsetMs(1500)
-                                .setMinPlaybackSpeed(0.97f)
-                                .setMaxPlaybackSpeed(1.03f)
+                                .setTargetOffsetMs(3000)
+                                .setMinOffsetMs(2000)
+                                .setMaxOffsetMs(6000)
+                                .setMinPlaybackSpeed(0.98f)
+                                .setMaxPlaybackSpeed(1.02f)
                                 .build()
                         } else {
                             MediaItem.LiveConfiguration.Builder()
-                                .setTargetOffsetMs(6000)
+                                .setTargetOffsetMs(8000)
+                                .setMinOffsetMs(5000)
+                                .setMaxOffsetMs(15000)
+                                .setMinPlaybackSpeed(0.98f)
+                                .setMaxPlaybackSpeed(1.02f)
                                 .build()
                         }
                     )
@@ -316,6 +542,8 @@ class PlayerViewModel(
     }
 
     fun closePlayback() {
+        cancelStallRecovery()
+        endAdBreak()
         exoPlayer.stop()
         exoPlayer.clearMediaItems()
         _currentChannel.value = ""
@@ -325,6 +553,8 @@ class PlayerViewModel(
 
     override fun onCleared() {
         super.onCleared()
+        cancelStallRecovery()
+        endAdBreak()
         exoPlayer.release()
     }
 }

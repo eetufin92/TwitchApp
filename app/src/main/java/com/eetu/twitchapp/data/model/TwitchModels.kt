@@ -34,3 +34,11 @@ data class ChatMessage(
     val twitchEmotes: Map<String, List<IntRange>> = emptyMap(), // emoteId -> ranges
     val timestamp: Long = System.currentTimeMillis()
 )
+
+data class TwitchUser(
+    val id: String,
+    val login: String,
+    val displayName: String,
+    val profileImageUrl: String = ""
+)
+

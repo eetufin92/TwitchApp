@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -35,10 +36,14 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.eetu.twitchapp.MainActivity
 import com.eetu.twitchapp.data.model.LiveStreamItem
 import com.eetu.twitchapp.ui.theme.*
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @Composable
 fun NativeTwitchPlayer(
@@ -66,6 +71,12 @@ fun NativeTwitchPlayer(
     showChatToggle: Boolean = false,
     isChatVisible: Boolean = true,
     onToggleChat: () -> Unit = {},
+    adBreakActive: Boolean = false,
+    adBreakRemainingSeconds: Int = 0,
+    isAutoMuteAds: Boolean = true,
+    isShowAdOverlay: Boolean = true,
+    onToggleAutoMuteAds: (Boolean) -> Unit = {},
+    onToggleShowAdOverlay: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -77,6 +88,21 @@ fun NativeTwitchPlayer(
     var showControls by remember { mutableStateOf(false) }
     var showSettingsSheet by remember { mutableStateOf(false) }
     var resizeMode by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
+
+    var chatFeedbackText by remember { mutableStateOf<String?>(null) }
+    var chatFeedbackJob by remember { mutableStateOf<Job?>(null) }
+    val coroutineScope = rememberCoroutineScope()
+
+    fun triggerChatToggle() {
+        val nextVisible = !isChatVisible
+        onToggleChat()
+        chatFeedbackJob?.cancel()
+        chatFeedbackText = if (nextVisible) "Chat visible" else "Chat hidden"
+        chatFeedbackJob = coroutineScope.launch {
+            delay(1100)
+            chatFeedbackText = null
+        }
+    }
 
     // Auto-hide controls after 3.5 seconds
     LaunchedEffect(showControls) {
@@ -101,10 +127,10 @@ fun NativeTwitchPlayer(
 
     // Fullscreen / Status bar handling:
     // In portrait: always show status bar
-    // In landscape: show status bar only when controls are visible, otherwise hide
-    DisposableEffect(isLandscape, showControls) {
+    // In landscape: keep status bar hidden at all times (even when controls/OSD are shown) to avoid weird video scaling
+    DisposableEffect(isLandscape) {
         if (isLandscape) {
-            activity?.setStatusBarsVisible(showControls)
+            activity?.setStatusBarsVisible(false)
         } else {
             activity?.setStatusBarsVisible(true)
         }
@@ -120,7 +146,7 @@ fun NativeTwitchPlayer(
                 detectTapGestures(
                     onTap = { showControls = !showControls },
                     onDoubleTap = {
-                        if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+                        triggerChatToggle()
                     }
                 )
             }
@@ -229,6 +255,162 @@ fun NativeTwitchPlayer(
                         color = Color.White,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+        }
+
+        // Commercial Break Placeholder & Countdown Overlay
+        if (adBreakActive && isShowAdOverlay) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(TwitchDark),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.padding(24.dp)
+                ) {
+                    if (streamInfo?.profileImageUrl?.isNotEmpty() == true) {
+                        AsyncImage(
+                            model = ImageRequest.Builder(LocalContext.current)
+                                .data(streamInfo.profileImageUrl)
+                                .crossfade(true)
+                                .build(),
+                            contentDescription = "Avatar",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .size(52.dp)
+                                .clip(CircleShape)
+                        )
+                    } else {
+                        Icon(
+                            Icons.Filled.Tv,
+                            contentDescription = null,
+                            tint = TwitchPurple,
+                            modifier = Modifier.size(44.dp)
+                        )
+                    }
+
+                    Text(
+                        text = "Commercial Break in Progress",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp
+                    )
+
+                    Surface(
+                        color = TwitchDarkCard,
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            if (isAutoMuteAds) {
+                                Icon(
+                                    Icons.Filled.VolumeOff,
+                                    contentDescription = null,
+                                    tint = TwitchPurple,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                            Text(
+                                text = if (adBreakRemainingSeconds > 0) "${adBreakRemainingSeconds}s remaining" else "Ending soon...",
+                                color = TwitchTeal,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
+                            if (isAutoMuteAds) {
+                                Text(
+                                    text = "• Muted",
+                                    color = TwitchTextDim,
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+                    }
+
+                    Text(
+                        text = "Live broadcast with ${streamInfo?.displayName ?: channelName} will resume shortly",
+                        color = TwitchTextDim,
+                        fontSize = 12.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                }
+            }
+        } else if (adBreakActive) {
+            // Subtle top banner badge with countdown when video is showing
+            Surface(
+                color = Color.Black.copy(alpha = 0.85f),
+                shape = RoundedCornerShape(12.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, TwitchPurple),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 16.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (isAutoMuteAds) {
+                        Icon(
+                            Icons.Filled.VolumeOff,
+                            contentDescription = null,
+                            tint = TwitchPurple,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                    Text(
+                        text = if (adBreakRemainingSeconds > 0) "Commercial • ${adBreakRemainingSeconds}s remaining" else "Commercial break",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp
+                    )
+                    if (isAutoMuteAds) {
+                        Text(
+                            text = "(Muted)",
+                            color = TwitchTextDim,
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+            }
+        }
+
+        // Brief visual indicator pill on double tap
+        AnimatedVisibility(
+            visible = chatFeedbackText != null,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.Center)
+        ) {
+            Surface(
+                color = Color.Black.copy(alpha = 0.82f),
+                shape = RoundedCornerShape(16.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, TwitchPurple.copy(alpha = 0.6f)),
+                shadowElevation = 8.dp
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = if (chatFeedbackText?.contains("visible") == true) Icons.AutoMirrored.Filled.Chat else Icons.Filled.ChatBubbleOutline,
+                        contentDescription = null,
+                        tint = TwitchPurple,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = chatFeedbackText ?: "",
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
                     )
                 }
             }
@@ -684,6 +866,64 @@ fun NativeTwitchPlayer(
                     Switch(
                         checked = isOledMode,
                         onCheckedChange = onToggleOledMode,
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = TwitchPurple
+                        )
+                    )
+                }
+
+                // Auto-Mute Commercials Toggle
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Auto-Mute Commercials",
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp
+                        )
+                        Text(
+                            text = "Automatically mute stream audio during ad breaks",
+                            color = TwitchTextDim,
+                            fontSize = 12.sp
+                        )
+                    }
+                    Switch(
+                        checked = isAutoMuteAds,
+                        onCheckedChange = onToggleAutoMuteAds,
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = TwitchPurple
+                        )
+                    )
+                }
+
+                // Commercial Break Overlay Toggle
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Commercial Break Countdown Overlay",
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp
+                        )
+                        Text(
+                            text = "Show streamer avatar & remaining seconds countdown during ads",
+                            color = TwitchTextDim,
+                            fontSize = 12.sp
+                        )
+                    }
+                    Switch(
+                        checked = isShowAdOverlay,
+                        onCheckedChange = onToggleShowAdOverlay,
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = Color.White,
                             checkedTrackColor = TwitchPurple

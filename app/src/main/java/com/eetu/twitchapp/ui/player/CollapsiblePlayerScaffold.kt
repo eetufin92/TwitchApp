@@ -2,6 +2,7 @@ package com.eetu.twitchapp.ui.player
 
 import android.app.Activity
 import android.content.pm.ActivityInfo
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
@@ -11,6 +12,7 @@ import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -40,6 +42,8 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.eetu.twitchapp.MainActivity
 import com.eetu.twitchapp.data.TwitchSettingsManager
+import com.eetu.twitchapp.data.auth.TwitchAuthManager
+import com.eetu.twitchapp.ui.auth.TwitchLoginDialog
 import com.eetu.twitchapp.ui.chat.ChatViewModel
 import com.eetu.twitchapp.ui.chat.NativeChatView
 import com.eetu.twitchapp.ui.components.FloatingResizableChat
@@ -47,6 +51,7 @@ import com.eetu.twitchapp.ui.theme.*
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun CollapsiblePlayerScaffold(
     playerViewModel: PlayerViewModel,
@@ -78,18 +83,57 @@ fun CollapsiblePlayerScaffold(
 
     var isOledMode by remember { mutableStateOf(settingsManager.isOledMode()) }
 
+    val authManager = remember { TwitchAuthManager.getInstance(context) }
+    val currentUser by authManager.currentUser.collectAsState()
+    var showLoginDialog by remember { mutableStateOf(false) }
+
     val chatViewModel = remember { ChatViewModel() }
+    val chatListState = rememberLazyListState()
     val chatMessages by chatViewModel.messages.collectAsState()
     val chatEmotes by chatViewModel.emotes.collectAsState()
 
     var showFloatingChat by remember { mutableStateOf(false) }
-    var showLandscapeSideChat by remember { mutableStateOf(false) }
+    var showLandscapeSideChat by remember { mutableStateOf(true) }
+    var showPortraitChat by remember { mutableStateOf(true) }
     var isFullscreen by remember { mutableStateOf(false) }
 
-    LaunchedEffect(currentChannel) {
+    LaunchedEffect(currentChannel, currentUser) {
         if (currentChannel.isNotEmpty()) {
-            chatViewModel.setChannel(currentChannel)
+            chatViewModel.setChannel(
+                channelName = currentChannel,
+                authToken = authManager.getAuthToken(),
+                userLogin = currentUser?.login
+            )
         }
+    }
+
+    val adBreakActive by playerViewModel.adBreakActive.collectAsState()
+    val adBreakRemaining by playerViewModel.adBreakRemaining.collectAsState()
+    val isAutoMuteAds by playerViewModel.isAutoMuteAds.collectAsState()
+    val isShowAdOverlay by playerViewModel.isShowAdOverlay.collectAsState()
+
+    if (showLoginDialog) {
+        TwitchLoginDialog(
+            onDismiss = { showLoginDialog = false },
+            onLoginSuccess = { showLoginDialog = false }
+        )
+    }
+
+    // System Back Gesture handling:
+    // 1. If in landscape, return to portrait
+    BackHandler(enabled = isLandscape) {
+        val act = context as? Activity
+        act?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+    }
+
+    // 2. If full player is active in portrait, collapse to bottom miniplayer bar
+    BackHandler(enabled = !isLandscape && currentChannel.isNotEmpty() && !isMiniPlayer) {
+        playerViewModel.setMiniPlayer(true)
+    }
+
+    // 3. If docked in miniplayer, back closes playback
+    BackHandler(enabled = !isLandscape && currentChannel.isNotEmpty() && isMiniPlayer) {
+        playerViewModel.closePlayback()
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -241,7 +285,6 @@ fun CollapsiblePlayerScaffold(
                         Row(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .statusBarsPadding()
                         ) {
                             NativeTwitchPlayer(
                                 exoPlayer = playerViewModel.exoPlayer,
@@ -274,18 +317,20 @@ fun CollapsiblePlayerScaffold(
                                 showChatToggle = true,
                                 isChatVisible = showLandscapeSideChat || showFloatingChat,
                                 onToggleChat = {
-                                    // Cycles cleanly: None -> Side-Bar -> Floating -> None
-                                    if (!showLandscapeSideChat && !showFloatingChat) {
-                                        showLandscapeSideChat = true
+                                    if (showLandscapeSideChat || showFloatingChat) {
+                                        showLandscapeSideChat = false
                                         showFloatingChat = false
-                                    } else if (showLandscapeSideChat) {
-                                        showLandscapeSideChat = false
-                                        showFloatingChat = true
                                     } else {
-                                        showLandscapeSideChat = false
+                                        showLandscapeSideChat = true
                                         showFloatingChat = false
                                     }
                                 },
+                                adBreakActive = adBreakActive,
+                                adBreakRemainingSeconds = adBreakRemaining,
+                                isAutoMuteAds = isAutoMuteAds,
+                                isShowAdOverlay = isShowAdOverlay,
+                                onToggleAutoMuteAds = { playerViewModel.setAutoMuteAds(it) },
+                                onToggleShowAdOverlay = { playerViewModel.setShowAdOverlay(it) },
                                 modifier = if (showLandscapeSideChat) {
                                     Modifier
                                         .weight(1.8f)
@@ -315,23 +360,28 @@ fun CollapsiblePlayerScaffold(
                                     NativeChatView(
                                         messages = chatMessages,
                                         emotes = chatEmotes,
+                                        currentUser = currentUser,
+                                        onSendMessage = { text -> chatViewModel.sendMessage(text, currentUser) },
+                                        onOpenLogin = { showLoginDialog = true },
+                                        listState = chatListState,
                                         modifier = Modifier.weight(1f)
                                     )
                                 }
                             }
                         }
                     } else {
-                        // Portrait: Video at Top (~235dp), Streamer Details + Native Chat below
+                        // Portrait: Video at Top (16:9), Streamer Details + Native Chat below
                         Column(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .statusBarsPadding()
+                                .imePadding()
                         ) {
                             // Draggable video container
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(235.dp)
+                                    .aspectRatio(16f / 9f)
                                     .then(playerDragModifier)
                             ) {
                                 NativeTwitchPlayer(
@@ -362,24 +412,43 @@ fun CollapsiblePlayerScaffold(
                                         act?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                                     },
                                     isFullscreen = isFullscreen,
+                                    showChatToggle = true,
+                                    isChatVisible = showPortraitChat && !showFloatingChat,
+                                    onToggleChat = {
+                                        if (showFloatingChat) {
+                                            showFloatingChat = false
+                                            showPortraitChat = true
+                                        } else {
+                                            showPortraitChat = !showPortraitChat
+                                        }
+                                    },
+                                    adBreakActive = adBreakActive,
+                                    adBreakRemainingSeconds = adBreakRemaining,
+                                    isAutoMuteAds = isAutoMuteAds,
+                                    isShowAdOverlay = isShowAdOverlay,
+                                    onToggleAutoMuteAds = { playerViewModel.setAutoMuteAds(it) },
+                                    onToggleShowAdOverlay = { playerViewModel.setShowAdOverlay(it) },
                                     modifier = Modifier.fillMaxSize()
                                 )
                             }
 
-                            // Streamer Info Bar
-                            StreamerDetailBar(
-                                streamInfo = streamInfo,
-                                channelName = currentChannel,
-                                onOpenMultiStream = { onOpenMultiStream(currentChannel) },
-                                onToggleFloatingChat = {
-                                    showFloatingChat = !showFloatingChat
-                                    if (showFloatingChat) {
-                                        showLandscapeSideChat = false
+                            // Streamer Info Bar (hidden while soft keyboard is visible to preserve space and keep video completely visible)
+                            val isImeVisible = WindowInsets.isImeVisible
+                            if (!isImeVisible) {
+                                StreamerDetailBar(
+                                    streamInfo = streamInfo,
+                                    channelName = currentChannel,
+                                    onOpenMultiStream = { onOpenMultiStream(currentChannel) },
+                                    onToggleFloatingChat = {
+                                        showFloatingChat = !showFloatingChat
+                                        if (showFloatingChat) {
+                                            showLandscapeSideChat = false
+                                        }
                                     }
-                                }
-                            )
+                                )
+                            }
 
-                            // Embedded Native Chat or Floating Notice (never both at same time)
+                            // Embedded Native Chat, Floating Notice, or Hidden Chat (never blocks video)
                             if (showFloatingChat) {
                                 Box(
                                     modifier = Modifier
@@ -412,7 +481,10 @@ fun CollapsiblePlayerScaffold(
                                             textAlign = TextAlign.Center
                                         )
                                         Button(
-                                            onClick = { showFloatingChat = false },
+                                            onClick = {
+                                                showFloatingChat = false
+                                                showPortraitChat = true
+                                            },
                                             colors = ButtonDefaults.buttonColors(containerColor = TwitchPurple),
                                             shape = RoundedCornerShape(8.dp)
                                         ) {
@@ -422,14 +494,59 @@ fun CollapsiblePlayerScaffold(
                                         }
                                     }
                                 }
-                            } else {
+                            } else if (showPortraitChat) {
                                 NativeChatView(
                                     messages = chatMessages,
                                     emotes = chatEmotes,
+                                    currentUser = currentUser,
+                                    onSendMessage = { text -> chatViewModel.sendMessage(text, currentUser) },
+                                    onOpenLogin = { showLoginDialog = true },
+                                    listState = chatListState,
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .weight(1f)
                                 )
+                            } else {
+                                // Chat is hidden in portrait
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .weight(1f)
+                                        .background(twitchColors.background),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                                        modifier = Modifier.padding(24.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.AutoMirrored.Filled.Chat,
+                                            contentDescription = null,
+                                            tint = TwitchTextDim,
+                                            modifier = Modifier.size(40.dp)
+                                        )
+                                        Text(
+                                            text = "Chat is hidden",
+                                            color = Color.White,
+                                            fontWeight = FontWeight.SemiBold,
+                                            fontSize = 15.sp
+                                        )
+                                        Text(
+                                            text = "Double-tap video to show chat",
+                                            color = TwitchTextDim,
+                                            fontSize = 12.sp
+                                        )
+                                        Spacer(Modifier.height(4.dp))
+                                        Button(
+                                            onClick = { showPortraitChat = true },
+                                            colors = ButtonDefaults.buttonColors(containerColor = TwitchPurple),
+                                            shape = RoundedCornerShape(8.dp)
+                                        ) {
+                                            Text("Show Chat", fontSize = 12.sp)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

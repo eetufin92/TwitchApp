@@ -34,22 +34,31 @@ class TwitchIrcClient(
     private val _messages = MutableSharedFlow<ChatMessage>(extraBufferCapacity = 100)
     val messages: SharedFlow<ChatMessage> = _messages.asSharedFlow()
 
-    fun connectAndJoin(channelName: String) {
+    private var currentAuthToken: String? = null
+    private var currentUserLogin: String? = null
+
+    fun connectAndJoin(channelName: String, authToken: String? = null, userLogin: String? = null) {
         val cleanChannel = channelName.trim().lowercase()
         if (cleanChannel.isEmpty()) return
 
-        if (webSocket != null && currentChannel == cleanChannel) {
-            return // already connected to this channel
+        val authChanged = authToken != currentAuthToken || userLogin != currentUserLogin
+        if (webSocket != null && currentChannel == cleanChannel && !authChanged) {
+            return // already connected with same credentials
         }
+
+        currentAuthToken = authToken
+        currentUserLogin = userLogin
 
         if (webSocket != null) {
             val old = currentChannel
-            if (old != null) {
+            if (old != null && !authChanged) {
                 webSocket?.send("PART #$old")
+                currentChannel = cleanChannel
+                webSocket?.send("JOIN #$cleanChannel")
+                return
             }
-            currentChannel = cleanChannel
-            webSocket?.send("JOIN #$cleanChannel")
-            return
+            // If auth changed, reconnect the entire socket
+            disconnect()
         }
 
         currentChannel = cleanChannel
@@ -57,11 +66,16 @@ class TwitchIrcClient(
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                Log.d(TAG, "Connected to Twitch IRC WebSocket for #$cleanChannel")
+                Log.d(TAG, "Connected to Twitch IRC WebSocket for #$cleanChannel (auth=${!authToken.isNullOrEmpty()})")
                 webSocket.send("CAP REQ :twitch.tv/tags twitch.tv/commands")
-                webSocket.send("PASS SCHMOOPIIE")
-                val randomNick = "justinfan" + Random.nextInt(10000, 99999)
-                webSocket.send("NICK $randomNick")
+                if (!authToken.isNullOrEmpty() && !userLogin.isNullOrEmpty()) {
+                    webSocket.send("PASS oauth:$authToken")
+                    webSocket.send("NICK ${userLogin.lowercase()}")
+                } else {
+                    webSocket.send("PASS SCHMOOPIIE")
+                    val randomNick = "justinfan" + Random.nextInt(10000, 99999)
+                    webSocket.send("NICK $randomNick")
+                }
                 webSocket.send("JOIN #$cleanChannel")
             }
 
@@ -81,6 +95,14 @@ class TwitchIrcClient(
                 this@TwitchIrcClient.webSocket = null
             }
         })
+    }
+
+    fun sendMessage(message: String): Boolean {
+        val ch = currentChannel ?: return false
+        val clean = message.trim()
+        if (clean.isEmpty()) return false
+        val ws = webSocket ?: return false
+        return ws.send("PRIVMSG #$ch :$clean")
     }
 
     fun disconnect() {

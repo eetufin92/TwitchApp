@@ -4,6 +4,7 @@ import android.net.Uri
 import android.util.Log
 import com.eetu.twitchapp.data.model.LiveStreamItem
 import com.eetu.twitchapp.data.model.PlaybackTokenResult
+import com.eetu.twitchapp.data.model.TwitchUser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -66,7 +67,7 @@ class TwitchGqlClient(
                     return@withContext null
                 }
 
-                val bodyStr = response.body?.string() ?: return@withContext null
+                val bodyStr = response.body.string()
                 val rootJson = JSONObject(bodyStr)
                 val tokenObj = rootJson.optJSONObject("data")
                     ?.optJSONObject("streamPlaybackAccessToken") ?: return@withContext null
@@ -143,10 +144,98 @@ class TwitchGqlClient(
 
         val query = """
             query {
-                searchFor(query: "$cleanSearch", target: CHANNELS, first: $limit) {
+                searchFor(userQuery: "$cleanSearch", platform: "web") {
                     channels {
                         edges {
                             item {
+                                ... on User {
+                                    id
+                                    login
+                                    displayName
+                                    profileImageURL(width: 70)
+                                    stream {
+                                        id
+                                        viewersCount
+                                        title
+                                        game {
+                                            name
+                                            boxArtURL(width: 144, height: 192)
+                                        }
+                                        previewImageURL(width: 640, height: 360)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        """.trimIndent()
+
+        try {
+            val payload = JSONObject().apply { put("query", query) }
+            val request = Request.Builder()
+                .url(GQL_URL)
+                .addHeader("Client-ID", CLIENT_ID)
+                .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext emptyList()
+                val bodyStr = response.body.string()
+                val rootJson = JSONObject(bodyStr)
+                val channelsEdges = rootJson.optJSONObject("data")
+                    ?.optJSONObject("searchFor")
+                    ?.optJSONObject("channels")
+                    ?.optJSONArray("edges") ?: return@withContext emptyList()
+
+                val results = mutableListOf<LiveStreamItem>()
+                for (i in 0 until channelsEdges.length()) {
+                    val item = channelsEdges.getJSONObject(i).optJSONObject("item") ?: continue
+                    val id = item.optString("id")
+                    val login = item.optString("login")
+                    if (id.isEmpty() || login.isEmpty()) continue
+
+                    val stream = item.optJSONObject("stream")
+                    val isLive = stream != null
+
+                    results.add(
+                        LiveStreamItem(
+                            id = stream?.optString("id") ?: id,
+                            broadcasterId = id,
+                            login = login,
+                            displayName = item.optString("displayName").ifEmpty { login },
+                            profileImageUrl = item.optString("profileImageURL"),
+                            viewersCount = stream?.optInt("viewersCount") ?: 0,
+                            title = stream?.optString("title") ?: if (isLive) "Live" else "Offline",
+                            gameName = stream?.optJSONObject("game")?.optString("name") ?: "",
+                            boxArtUrl = stream?.optJSONObject("game")?.optString("boxArtURL") ?: "",
+                            previewImageUrl = stream?.optString("previewImageURL") ?: ""
+                        )
+                    )
+                }
+                // Sort live streams first by viewer count
+                results.sortByDescending { it.viewersCount }
+                results.take(limit)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Search channels exception for $searchTerm", e)
+            emptyList()
+        }
+    }
+
+    /**
+     * Fetch channels followed by the authenticated user that are currently live.
+     */
+    suspend fun getFollowedLiveStreams(authToken: String): List<LiveStreamItem> = withContext(Dispatchers.IO) {
+        val cleanToken = authToken.trim()
+        if (cleanToken.isEmpty()) return@withContext emptyList()
+
+        val query = """
+            query FollowingLive_CurrentUser {
+                currentUser {
+                    followedLiveUsers(first: 100) {
+                        edges {
+                            node {
                                 id
                                 login
                                 displayName
@@ -169,39 +258,47 @@ class TwitchGqlClient(
         """.trimIndent()
 
         try {
-            val payload = JSONObject().apply { put("query", query) }
+            val payload = JSONObject().apply {
+                put("operationName", "FollowingLive_CurrentUser")
+                put("query", query)
+            }
             val request = Request.Builder()
                 .url(GQL_URL)
                 .addHeader("Client-ID", CLIENT_ID)
+                .addHeader("Authorization", "OAuth $cleanToken")
                 .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
                 .build()
 
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return@withContext emptyList()
-                val bodyStr = response.body?.string() ?: return@withContext emptyList()
+                val bodyStr = response.body.string()
                 val rootJson = JSONObject(bodyStr)
-                val channelsEdges = rootJson.optJSONObject("data")
-                    ?.optJSONObject("searchFor")
-                    ?.optJSONObject("channels")
+                val edges = rootJson.optJSONObject("data")
+                    ?.optJSONObject("currentUser")
+                    ?.optJSONObject("followedLiveUsers")
                     ?.optJSONArray("edges") ?: return@withContext emptyList()
 
                 val results = mutableListOf<LiveStreamItem>()
-                for (i in 0 until channelsEdges.length()) {
-                    val item = channelsEdges.getJSONObject(i).optJSONObject("item") ?: continue
-                    val stream = item.optJSONObject("stream")
-                    val isLive = stream != null
+                for (i in 0 until edges.length()) {
+                    val node = edges.getJSONObject(i).optJSONObject("node") ?: continue
+                    val id = node.optString("id")
+                    val login = node.optString("login")
+                    if (id.isEmpty() || login.isEmpty()) continue
+
+                    val stream = node.optJSONObject("stream")
+                    val game = stream?.optJSONObject("game")
 
                     results.add(
                         LiveStreamItem(
-                            id = stream?.optString("id") ?: item.optString("id"),
-                            broadcasterId = item.optString("id"),
-                            login = item.optString("login"),
-                            displayName = item.optString("displayName").ifEmpty { item.optString("login") },
-                            profileImageUrl = item.optString("profileImageURL"),
+                            id = stream?.optString("id") ?: id,
+                            broadcasterId = id,
+                            login = login,
+                            displayName = node.optString("displayName").ifEmpty { login },
+                            profileImageUrl = node.optString("profileImageURL"),
                             viewersCount = stream?.optInt("viewersCount") ?: 0,
-                            title = stream?.optString("title") ?: if (isLive) "Live" else "Offline",
-                            gameName = stream?.optJSONObject("game")?.optString("name") ?: "",
-                            boxArtUrl = stream?.optJSONObject("game")?.optString("boxArtURL") ?: "",
+                            title = stream?.optString("title") ?: "Live",
+                            gameName = game?.optString("name") ?: "",
+                            boxArtUrl = game?.optString("boxArtURL") ?: "",
                             previewImageUrl = stream?.optString("previewImageURL") ?: ""
                         )
                     )
@@ -209,8 +306,62 @@ class TwitchGqlClient(
                 results
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Search channels exception for $searchTerm", e)
+            Log.e(TAG, "Get followed live streams exception", e)
             emptyList()
+        }
+    }
+
+    /**
+     * Validate an auth token and fetch current user profile.
+     */
+    suspend fun validateAuthToken(authToken: String): TwitchUser? = withContext(Dispatchers.IO) {
+        val cleanToken = authToken.trim()
+        if (cleanToken.isEmpty()) return@withContext null
+
+        val query = """
+            query {
+                currentUser {
+                    id
+                    login
+                    displayName
+                    profileImageURL(width: 150)
+                }
+            }
+        """.trimIndent()
+
+        try {
+            val payload = JSONObject().apply { put("query", query) }
+            val request = Request.Builder()
+                .url(GQL_URL)
+                .addHeader("Client-ID", CLIENT_ID)
+                .addHeader("Authorization", "OAuth $cleanToken")
+                .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                val bodyStr = response.body.string()
+                val rootJson = JSONObject(bodyStr)
+                val userJson = rootJson.optJSONObject("data")?.optJSONObject("currentUser")
+                    ?: return@withContext null
+
+                val id = userJson.optString("id")
+                val login = userJson.optString("login")
+                if (id.isEmpty() || login.isEmpty()) return@withContext null
+
+                val displayName = userJson.optString("displayName").ifEmpty { login }
+                val profileImageUrl = userJson.optString("profileImageURL")
+
+                TwitchUser(
+                    id = id,
+                    login = login,
+                    displayName = displayName,
+                    profileImageUrl = profileImageUrl
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Validate auth token exception", e)
+            null
         }
     }
 
@@ -252,7 +403,7 @@ class TwitchGqlClient(
 
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return@withContext null
-                val bodyStr = response.body?.string() ?: return@withContext null
+                val bodyStr = response.body.string()
                 val rootJson = JSONObject(bodyStr)
                 val user = rootJson.optJSONObject("data")?.optJSONObject("user") ?: return@withContext null
                 val stream = user.optJSONObject("stream")
@@ -287,7 +438,7 @@ class TwitchGqlClient(
 
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return emptyList()
-                val bodyStr = response.body?.string() ?: return emptyList()
+                val bodyStr = response.body.string()
                 val rootJson = JSONObject(bodyStr)
                 val edges = rootJson.optJSONObject("data")
                     ?.optJSONObject("streams")

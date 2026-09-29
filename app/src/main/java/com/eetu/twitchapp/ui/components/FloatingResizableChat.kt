@@ -269,6 +269,7 @@ fun FloatingResizableChat(
                             messages = messages,
                             emotes = emotes,
                             fontSizeSp = 11.5f,
+                            showInput = false,
                             modifier = Modifier.fillMaxSize()
                         )
 
