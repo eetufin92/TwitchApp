@@ -26,6 +26,9 @@ class ChatViewModel(
     private val _emotes = MutableStateFlow<Map<String, String>>(emptyMap())
     val emotes: StateFlow<Map<String, String>> = _emotes.asStateFlow()
 
+    private val _structuredEmotes = MutableStateFlow<List<com.eetu.twitchapp.data.model.EmoteItem>>(emptyList())
+    val structuredEmotes: StateFlow<List<com.eetu.twitchapp.data.model.EmoteItem>> = _structuredEmotes.asStateFlow()
+
     private val _activeChannel = MutableStateFlow("")
     val activeChannel: StateFlow<String> = _activeChannel.asStateFlow()
 
@@ -86,12 +89,13 @@ class ChatViewModel(
         // Connect to IRC WebSocket with auth if available
         ircClient.connectAndJoin(clean, authToken, userLogin)
 
-        // Fetch 7TV, BTTV, FFZ emotes
+        // Fetch Twitch, 7TV, BTTV, FFZ emotes
         viewModelScope.launch {
             _isLoadingEmotes.value = true
             try {
-                val customEmotes = emoteRepository.getChannelEmotes(clean)
-                _emotes.value = customEmotes
+                val customEmotes = emoteRepository.getStructuredChannelEmotes(clean)
+                _structuredEmotes.value = customEmotes
+                _emotes.value = customEmotes.associate { it.name to it.url }
             } catch (e: Exception) {
                 // Keep existing emotes on error
             } finally {

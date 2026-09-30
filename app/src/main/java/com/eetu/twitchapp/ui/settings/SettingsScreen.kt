@@ -188,8 +188,8 @@ fun SettingsScreen(
             )
 
             SettingsCategoryItem(
-                title = "Chat & Appearance",
-                subtitle = "Floating chat defaults, desktop/tablet mode, user agent",
+                title = "Appearance & Playback",
+                subtitle = "Thumbnail size, feed layout, low latency buffer, chat opacity",
                 icon = Icons.Filled.Palette,
                 iconTint = Color(0xFFFFB703),
                 onClick = onNavigateToAppearance

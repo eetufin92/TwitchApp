@@ -25,6 +25,7 @@ fun AdSettingsScreen(
 
     var autoMute by remember { mutableStateOf(settingsManager.isAutoMuteAds()) }
     var showOverlay by remember { mutableStateOf(settingsManager.isShowAdOverlay()) }
+    var auto360p by remember { mutableStateOf(settingsManager.isAuto360pAds()) }
 
     Scaffold(
         topBar = {
@@ -60,7 +61,7 @@ fun AdSettingsScreen(
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "Twitch embeds advertisements directly into the video stream via Server-Side Ad Insertion (SSAI). When an ad plays, TwitchApp automatically detects the commercial break, mutes the ad audio, and replaces it with a clean placeholder until the live broadcast resumes.",
+                        text = "Twitch embeds advertisements directly into the video stream via Server-Side Ad Insertion (SSAI). When an ad break occurs, Twitch replaces the broadcaster's video feed with either a commercial or its purple 'Commercial break in progress' screen. Because this replacement happens on Twitch's servers, no app toggle can skip the break — but TwitchApp automatically detects the break and mutes the audio so you don't have to listen to loud commercials.",
                         color = TwitchTextDim,
                         fontSize = 13.sp,
                         lineHeight = 18.sp
@@ -83,12 +84,22 @@ fun AdSettingsScreen(
                     )
                     HorizontalDivider(color = TwitchDarkSurface)
                     EmoteToggleRow(
-                        title = "Show 'Ad in Progress' Overlay",
-                        description = "Display a soothing overlay with remaining countdown instead of the ad video",
+                        title = "Hide Video (Placeholder Screen)",
+                        description = "Covers the video with a 'Commercial break' card. Turn off to watch muted ads directly on screen with a top countdown pill.",
                         checked = showOverlay,
                         onCheckedChange = {
                             showOverlay = it
                             settingsManager.setShowAdOverlay(it)
+                        }
+                    )
+                    HorizontalDivider(color = TwitchDarkSurface)
+                    EmoteToggleRow(
+                        title = "Desktop 360p Video Swap (Experimental)",
+                        description = "Downscale stream to 360p during ads. Note: Twitch embeds ads into all qualities, so quality swap does not skip ads and may cause live buffering.",
+                        checked = auto360p,
+                        onCheckedChange = {
+                            auto360p = it
+                            settingsManager.setAuto360pAds(it)
                         }
                     )
                 }

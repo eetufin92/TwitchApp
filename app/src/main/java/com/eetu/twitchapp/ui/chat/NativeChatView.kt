@@ -49,19 +49,26 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.text.style.TextAlign
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.eetu.twitchapp.data.model.ChatBadge
 import com.eetu.twitchapp.data.model.ChatMessage
+import com.eetu.twitchapp.data.model.EmoteItem
 import com.eetu.twitchapp.data.model.TwitchUser
 import com.eetu.twitchapp.ui.theme.*
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
 fun NativeChatView(
     messages: List<ChatMessage>,
     emotes: Map<String, String>,
+    structuredEmotes: List<EmoteItem> = emptyList(),
     modifier: Modifier = Modifier,
     fontSizeSp: Float = 13f,
     currentUser: TwitchUser? = null,
@@ -90,6 +97,8 @@ fun NativeChatView(
     var inputText by remember { mutableStateOf(TextFieldValue("")) }
     var showEmotePicker by remember { mutableStateOf(false) }
     var emoteSearchQuery by remember { mutableStateOf("") }
+    var selectedSourceFilter by remember { mutableStateOf("All") }
+    var previewEmote by remember { mutableStateOf<EmoteItem?>(null) }
 
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
@@ -220,7 +229,9 @@ fun NativeChatView(
                         ChatMessageRow(
                             message = message,
                             emotes = emotes,
-                            fontSizeSp = fontSizeSp
+                            structuredEmotes = structuredEmotes,
+                            fontSizeSp = fontSizeSp,
+                            onEmoteClick = { previewEmote = it }
                         )
                     }
                 }
@@ -425,22 +436,83 @@ fun NativeChatView(
 
                 // Emote Picker Tray
                 if (showEmotePicker) {
-                    val filteredEmotes = remember(emoteSearchQuery, emotes) {
-                        val q = emoteSearchQuery.trim().lowercase()
-                        if (q.isEmpty()) {
-                            emotes.entries.toList()
+                    val allAvailableEmotes = remember(structuredEmotes, emotes) {
+                        if (structuredEmotes.isNotEmpty()) {
+                            structuredEmotes
                         } else {
-                            emotes.entries.filter { it.key.lowercase().contains(q) }.toList()
+                            emotes.map { (name, url) ->
+                                EmoteItem(
+                                    name = name,
+                                    url = url,
+                                    highResUrl = url,
+                                    source = when {
+                                        url.contains("7tv") -> "7TV"
+                                        url.contains("betterttv") -> "BTTV"
+                                        url.contains("frankerfacez") -> "FFZ"
+                                        else -> "Twitch"
+                                    }
+                                )
+                            }
                         }
+                    }
+
+                    fun sourceOrder(src: String): Int = when (src.lowercase()) {
+                        "twitch" -> 0
+                        "7tv" -> 1
+                        "bttv" -> 2
+                        "ffz" -> 3
+                        else -> 4
+                    }
+
+                    val filteredEmotes = remember(emoteSearchQuery, selectedSourceFilter, allAvailableEmotes) {
+                        val q = emoteSearchQuery.trim().lowercase()
+                        allAvailableEmotes
+                            .filter { item ->
+                                val matchesFilter = selectedSourceFilter == "All" || item.source.equals(selectedSourceFilter, ignoreCase = true)
+                                val matchesQuery = q.isEmpty() || item.name.lowercase().contains(q)
+                                matchesFilter && matchesQuery
+                            }
+                            .sortedWith(compareBy({ sourceOrder(it.source) }, { it.name.lowercase() }))
                     }
 
                     Surface(
                         color = TwitchDark,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(205.dp)
+                            .height(235.dp)
                     ) {
                         Column(modifier = Modifier.fillMaxSize()) {
+                            // Source Filter Chips Row (Twitch First!)
+                            LazyRow(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                val sources = listOf("All", "Twitch", "7TV", "BTTV", "FFZ")
+                                items(sources) { src ->
+                                    val isSelected = selectedSourceFilter == src
+                                    FilterChip(
+                                        selected = isSelected,
+                                        onClick = { selectedSourceFilter = src },
+                                        label = {
+                                            Text(
+                                                text = src,
+                                                fontSize = 11.sp,
+                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                            )
+                                        },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = TwitchPurple,
+                                            selectedLabelColor = Color.White,
+                                            containerColor = TwitchDarkCard,
+                                            labelColor = TwitchTextDim
+                                        ),
+                                        modifier = Modifier.height(28.dp)
+                                    )
+                                }
+                            }
+
                             // Search box inside Emote Tray
                             BasicTextField(
                                 value = emoteSearchQuery,
@@ -453,12 +525,12 @@ fun NativeChatView(
                                 cursorBrush = SolidColor(TwitchPurple),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                                    .padding(horizontal = 8.dp, vertical = 2.dp),
                                 decorationBox = { innerTextField ->
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .height(36.dp)
+                                            .height(34.dp)
                                             .background(TwitchDarkCard, RoundedCornerShape(8.dp))
                                             .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(8.dp))
                                             .padding(horizontal = 10.dp),
@@ -477,7 +549,7 @@ fun NativeChatView(
                                         ) {
                                             if (emoteSearchQuery.isEmpty()) {
                                                 Text(
-                                                    "Search 7TV, BTTV, FFZ emotes...",
+                                                    "Search ${if (selectedSourceFilter == "All") "Twitch, 7TV, BTTV, FFZ" else selectedSourceFilter} emotes...",
                                                     fontSize = 12.sp,
                                                     color = TwitchTextDim
                                                 )
@@ -517,23 +589,24 @@ fun NativeChatView(
                                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                                     modifier = Modifier.fillMaxSize()
                                 ) {
-                                    items(filteredEmotes, key = { it.key }) { (name, url) ->
+                                    items(filteredEmotes, key = { "${it.source}_${it.name}" }) { item ->
                                         Box(
                                             modifier = Modifier
                                                 .size(44.dp)
                                                 .clip(RoundedCornerShape(6.dp))
                                                 .background(TwitchDarkCard)
-                                                .clickable {
-                                                    insertEmote(name)
-                                                },
+                                                .combinedClickable(
+                                                    onClick = { insertEmote(item.name) },
+                                                    onLongClick = { previewEmote = item }
+                                                ),
                                             contentAlignment = Alignment.Center
                                         ) {
                                             AsyncImage(
                                                 model = ImageRequest.Builder(LocalContext.current)
-                                                    .data(url)
+                                                    .data(item.url)
                                                     .crossfade(true)
                                                     .build(),
-                                                contentDescription = name,
+                                                contentDescription = item.name,
                                                 modifier = Modifier.size(28.dp)
                                             )
                                         }
@@ -543,37 +616,108 @@ fun NativeChatView(
                         }
                     }
                 }
-            } else {
-                // Logged-out Banner prompting user to log in
-                Surface(
-                    color = twitchColors.card,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = "Log in to join the chat",
-                            color = TwitchTextDim,
-                            fontSize = 13.sp
-                        )
-                        Button(
-                            onClick = { onOpenLogin?.invoke() },
-                            colors = ButtonDefaults.buttonColors(containerColor = TwitchPurple),
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp)
-                        ) {
-                            Text("Log In", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                        }
-                    }
+            }
+        }
+        if (previewEmote != null) {
+            EmotePreviewDialog(
+                emote = previewEmote!!,
+                onDismiss = { previewEmote = null },
+                onInsert = {
+                    insertEmote(it.name)
+                    previewEmote = null
                 }
+            )
+        }
+    }
+}
+
+private sealed interface ChatMessageElement {
+    data class Text(val content: String) : ChatMessageElement
+    data class Emote(val item: EmoteItem) : ChatMessageElement
+}
+
+private fun parseMessageElements(
+    message: ChatMessage,
+    emotes: Map<String, String>,
+    structuredMap: Map<String, EmoteItem>
+): List<ChatMessageElement> {
+    val elements = mutableListOf<ChatMessageElement>()
+    val text = message.text
+    if (text.isEmpty()) return elements
+
+    val sortedTwitchRanges = message.twitchEmotes.flatMap { (id, ranges) ->
+        ranges.filter { it.first in text.indices && it.last in text.indices && it.first <= it.last }
+            .map { it to id }
+    }.sortedBy { it.first.first }
+
+    var cursor = 0
+    val textBuilder = StringBuilder()
+
+    fun flushText() {
+        val content = textBuilder.toString().trim()
+        if (content.isNotEmpty()) {
+            elements.add(ChatMessageElement.Text(content))
+        }
+        textBuilder.clear()
+    }
+
+    fun parsePlainTextSegment(segment: String) {
+        if (segment.isBlank()) return
+        val words = segment.split(" ").filter { it.isNotEmpty() }
+        for (word in words) {
+            val structured = structuredMap[word]
+            val fallbackUrl = if (structured == null) emotes[word] else null
+            if (structured != null) {
+                flushText()
+                elements.add(ChatMessageElement.Emote(structured))
+            } else if (fallbackUrl != null) {
+                flushText()
+                elements.add(
+                    ChatMessageElement.Emote(
+                        EmoteItem(
+                            name = word,
+                            url = fallbackUrl,
+                            highResUrl = fallbackUrl,
+                            source = "Emote"
+                        )
+                    )
+                )
+            } else {
+                if (textBuilder.isNotEmpty()) {
+                    textBuilder.append(" ")
+                }
+                textBuilder.append(word)
             }
         }
     }
+
+    for ((range, emoteId) in sortedTwitchRanges) {
+        if (range.first < cursor) continue
+        if (range.first > cursor) {
+            parsePlainTextSegment(text.substring(cursor, range.first))
+        }
+        flushText()
+        val emoteCode = if (range.first in text.indices && range.last < text.length) {
+            text.substring(range.first, range.last + 1)
+        } else {
+            "emote"
+        }
+        val emoteItem = structuredMap[emoteCode] ?: EmoteItem(
+            name = emoteCode,
+            url = "https://static-cdn.jtvnw.net/emoticons/v2/$emoteId/default/dark/2.0",
+            highResUrl = "https://static-cdn.jtvnw.net/emoticons/v2/$emoteId/default/dark/3.0",
+            source = "Twitch"
+        )
+        elements.add(ChatMessageElement.Emote(emoteItem))
+        cursor = range.last + 1
+    }
+
+    if (cursor < text.length) {
+        parsePlainTextSegment(text.substring(cursor))
+    }
+    flushText()
+
+    return elements
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -581,21 +725,29 @@ fun NativeChatView(
 private fun ChatMessageRow(
     message: ChatMessage,
     emotes: Map<String, String>,
-    fontSizeSp: Float
+    structuredEmotes: List<EmoteItem>,
+    fontSizeSp: Float,
+    onEmoteClick: (EmoteItem) -> Unit
 ) {
     val userColor = remember(message.color) {
         parseHexColor(message.color)
     }
 
-    // Split message into words to check against 7TV/BTTV/FFZ emotes
-    val words = remember(message.text) {
-        message.text.split(" ").filter { it.isNotEmpty() }
+    val structuredMap = remember(structuredEmotes) {
+        structuredEmotes.associateBy { it.name }
     }
+
+    val elements = remember(message.id, message.text, message.twitchEmotes, emotes, structuredMap) {
+        parseMessageElements(message, emotes, structuredMap)
+    }
+
+    val emoteHeight = (fontSizeSp * 1.55f).coerceIn(18f, 32f).dp
+    val emoteMaxWidth = (fontSizeSp * 2.3f).coerceIn(22f, 60f).dp
 
     FlowRow(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalArrangement = Arrangement.Center
+        verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterVertically)
     ) {
         // Badges
         message.badges.forEach { badge ->
@@ -607,32 +759,137 @@ private fun ChatMessageRow(
             text = "${message.displayName}:",
             color = userColor,
             fontWeight = FontWeight.Bold,
-            fontSize = fontSizeSp.sp
+            fontSize = fontSizeSp.sp,
+            lineHeight = (fontSizeSp * 1.35f).sp
         )
 
-        // Message text words & inline emotes
-        words.forEach { word ->
-            val emoteUrl = emotes[word]
-            if (emoteUrl != null) {
-                // 7TV, BTTV, or FFZ Emote!
-                AsyncImage(
-                    model = ImageRequest.Builder(LocalContext.current)
-                        .data(emoteUrl)
-                        .crossfade(true)
-                        .build(),
-                    contentDescription = word,
-                    contentScale = ContentScale.Fit,
+        // Elements: text chunks and clickable emotes
+        elements.forEach { element ->
+            when (element) {
+                is ChatMessageElement.Text -> {
+                    Text(
+                        text = element.content,
+                        color = Color.White,
+                        fontSize = fontSizeSp.sp,
+                        lineHeight = (fontSizeSp * 1.35f).sp
+                    )
+                }
+                is ChatMessageElement.Emote -> {
+                    AsyncImage(
+                        model = ImageRequest.Builder(LocalContext.current)
+                            .data(element.item.url)
+                            .crossfade(true)
+                            .build(),
+                        contentDescription = element.item.name,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .height(emoteHeight)
+                            .widthIn(min = emoteHeight, max = emoteMaxWidth)
+                            .clip(RoundedCornerShape(3.dp))
+                            .clickable { onEmoteClick(element.item) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmotePreviewDialog(
+    emote: EmoteItem,
+    onDismiss: () -> Unit,
+    onInsert: (EmoteItem) -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = TwitchDarkCard,
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
+            modifier = Modifier
+                .width(280.dp)
+                .wrapContentHeight()
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                // Header: Source Chip & Close Button
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        color = TwitchPurple.copy(alpha = 0.2f),
+                        shape = RoundedCornerShape(6.dp),
+                        border = BorderStroke(1.dp, TwitchPurple.copy(alpha = 0.4f))
+                    ) {
+                        Text(
+                            text = emote.source,
+                            color = TwitchPurple,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            Icons.Filled.Close,
+                            contentDescription = "Close",
+                            tint = TwitchTextDim,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+
+                // Emote Big Preview
+                Box(
                     modifier = Modifier
-                        .height(26.dp)
-                        .widthIn(min = 18.dp, max = 56.dp)
-                )
-            } else {
+                        .size(110.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(TwitchDark)
+                        .padding(8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(LocalContext.current)
+                            .data(emote.highResUrl.ifEmpty { emote.url })
+                            .crossfade(true)
+                            .build(),
+                        contentDescription = emote.name,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+
+                // Emote Name
                 Text(
-                    text = word,
+                    text = emote.name,
                     color = Color.White,
-                    fontSize = fontSizeSp.sp,
-                    lineHeight = (fontSizeSp + 4).sp
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center
                 )
+
+                // Insert Button
+                Button(
+                    onClick = {
+                        onInsert(emote)
+                        onDismiss()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = TwitchPurple),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Insert in Chat", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                }
             }
         }
     }

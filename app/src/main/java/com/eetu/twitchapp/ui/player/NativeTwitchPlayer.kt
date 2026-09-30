@@ -11,6 +11,9 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.basicMarquee
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.window.Dialog
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -47,6 +50,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -75,11 +79,13 @@ fun NativeTwitchPlayer(
     selectedQuality: String = "auto",
     isAudioOnly: Boolean = false,
     isLowLatency: Boolean = true,
+    lowLatencyBufferMs: Int = 4500,
     isPipEnabled: Boolean = true,
     backgroundAudioEnabled: Boolean = true,
     onSelectQuality: (String) -> Unit = {},
     onToggleAudioOnly: () -> Unit = {},
     onToggleLowLatency: () -> Unit = {},
+    onSelectLowLatencyBuffer: (Int) -> Unit = {},
     onTogglePipEnabled: (Boolean) -> Unit = {},
     onToggleBackgroundAudio: (Boolean) -> Unit = {},
     isOledMode: Boolean = false,
@@ -94,8 +100,11 @@ fun NativeTwitchPlayer(
     adBreakRemainingSeconds: Int = 0,
     isAutoMuteAds: Boolean = true,
     isShowAdOverlay: Boolean = true,
+    isAuto360pAds: Boolean = true,
     onToggleAutoMuteAds: (Boolean) -> Unit = {},
     onToggleShowAdOverlay: (Boolean) -> Unit = {},
+    onToggleAuto360pAds: (Boolean) -> Unit = {},
+    onDismissAdBreak: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -106,6 +115,7 @@ fun NativeTwitchPlayer(
 
     var showControls by remember { mutableStateOf(false) }
     var showSettingsSheet by remember { mutableStateOf(false) }
+    var showStreamDetailsDialog by remember { mutableStateOf(false) }
     var resizeMode by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
 
     var chatFeedbackText by remember { mutableStateOf<String?>(null) }
@@ -179,17 +189,13 @@ fun NativeTwitchPlayer(
         }
     }
 
-    // Fullscreen / Status bar handling:
-    // In portrait: always show status bar
-    // In landscape: keep status bar hidden at all times (even when controls/OSD are shown) to avoid weird video scaling
+    // Fullscreen / Status bar & Navigation bar handling:
+    // In portrait: show system bars
+    // In landscape: hide system bars (status bar + gesture pill) to avoid video overlap and letterboxing
     DisposableEffect(isLandscape) {
-        if (isLandscape) {
-            activity?.setStatusBarsVisible(false)
-        } else {
-            activity?.setStatusBarsVisible(true)
-        }
+        activity?.setLandscapeSystemBars(isLandscape)
         onDispose {
-            activity?.setStatusBarsVisible(true)
+            activity?.setLandscapeSystemBars(false)
         }
     }
 
@@ -253,6 +259,40 @@ fun NativeTwitchPlayer(
                                     launch { scaleAnim.animateTo(targetScale, tween(250, easing = FastOutSlowInEasing)) }
                                     launch { offsetXAnim.animateTo(targetX, tween(250, easing = FastOutSlowInEasing)) }
                                     launch { offsetYAnim.animateTo(targetY, tween(250, easing = FastOutSlowInEasing)) }
+                                }
+                            }
+                        }
+                    }
+                )
+            }
+            .pointerInput(isLandscape) {
+                var totalDragY = 0f
+                var totalDragX = 0f
+                var isDragging = false
+                detectDragGestures(
+                    onDragStart = {
+                        totalDragY = 0f
+                        totalDragX = 0f
+                        isDragging = false
+                    },
+                    onDrag = { change, dragAmount ->
+                        totalDragY += dragAmount.y
+                        totalDragX += dragAmount.x
+                        if (kotlin.math.abs(totalDragY) > 20f || kotlin.math.abs(totalDragX) > 20f) {
+                            isDragging = true
+                            change.consume()
+                        }
+                    },
+                    onDragEnd = {
+                        if (isDragging) {
+                            val threshold = 40.dp.toPx()
+                            if (kotlin.math.abs(totalDragY) > kotlin.math.abs(totalDragX)) {
+                                if (!isLandscape && totalDragY < -threshold) {
+                                    onToggleFullscreen()
+                                } else if (!isLandscape && totalDragY > threshold) {
+                                    onMinimize()
+                                } else if (isLandscape && totalDragY > threshold) {
+                                    onToggleFullscreen()
                                 }
                             }
                         }
@@ -408,8 +448,10 @@ fun NativeTwitchPlayer(
             ) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.padding(24.dp)
+                    verticalArrangement = Arrangement.Center,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
                 ) {
                     if (streamInfo?.profileImageUrl?.isNotEmpty() == true) {
                         AsyncImage(
@@ -420,31 +462,27 @@ fun NativeTwitchPlayer(
                             contentDescription = "Avatar",
                             contentScale = ContentScale.Crop,
                             modifier = Modifier
-                                .size(52.dp)
+                                .size(36.dp)
                                 .clip(CircleShape)
                         )
-                    } else {
-                        Icon(
-                            Icons.Filled.Tv,
-                            contentDescription = null,
-                            tint = TwitchPurple,
-                            modifier = Modifier.size(44.dp)
-                        )
+                        Spacer(modifier = Modifier.height(4.dp))
                     }
 
                     Text(
                         text = "Commercial Break in Progress",
                         color = Color.White,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp
+                        fontSize = 14.sp
                     )
+
+                    Spacer(modifier = Modifier.height(4.dp))
 
                     Surface(
                         color = TwitchDarkCard,
                         shape = RoundedCornerShape(12.dp)
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
@@ -453,31 +491,88 @@ fun NativeTwitchPlayer(
                                     Icons.Filled.VolumeOff,
                                     contentDescription = null,
                                     tint = TwitchPurple,
-                                    modifier = Modifier.size(16.dp)
+                                    modifier = Modifier.size(14.dp)
                                 )
                             }
                             Text(
                                 text = if (adBreakRemainingSeconds > 0) "${adBreakRemainingSeconds}s remaining" else "Ending soon...",
                                 color = TwitchTeal,
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp
+                                fontSize = 12.sp
                             )
                             if (isAutoMuteAds) {
                                 Text(
                                     text = "• Muted",
                                     color = TwitchTextDim,
-                                    fontSize = 12.sp
+                                    fontSize = 11.sp
+                                )
+                            }
+                            if (isAuto360pAds) {
+                                Text(
+                                    text = "• 360p",
+                                    color = TwitchTeal,
+                                    fontSize = 11.sp
                                 )
                             }
                         }
                     }
 
+                    Spacer(modifier = Modifier.height(4.dp))
+
                     Text(
-                        text = "Live broadcast with ${streamInfo?.displayName ?: channelName} will resume shortly",
+                        text = "Stream with ${streamInfo?.displayName ?: channelName} will resume shortly",
                         color = TwitchTextDim,
-                        fontSize = 12.sp,
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center
                     )
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = { onToggleShowAdOverlay(false) },
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, TwitchPurple.copy(alpha = 0.7f)),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                            modifier = Modifier.height(28.dp)
+                        ) {
+                            Icon(
+                                Icons.Filled.Visibility,
+                                contentDescription = null,
+                                modifier = Modifier.size(13.dp),
+                                tint = TwitchTeal
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Watch Video",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+
+                        OutlinedButton(
+                            onClick = { onDismissAdBreak() },
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, TwitchTextDim.copy(alpha = 0.5f)),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                            modifier = Modifier.height(28.dp)
+                        ) {
+                            Icon(
+                                Icons.Filled.Close,
+                                contentDescription = null,
+                                modifier = Modifier.size(13.dp),
+                                tint = TwitchTextDim
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Dismiss",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
                 }
             }
         } else if (adBreakActive) {
@@ -489,6 +584,9 @@ fun NativeTwitchPlayer(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .padding(top = 16.dp)
+                    .clickable {
+                        onDismissAdBreak()
+                    }
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
@@ -513,6 +611,13 @@ fun NativeTwitchPlayer(
                         Text(
                             text = "(Muted)",
                             color = TwitchTextDim,
+                            fontSize = 11.sp
+                        )
+                    }
+                    if (isAuto360pAds) {
+                        Text(
+                            text = "(360p)",
+                            color = TwitchTeal,
                             fontSize = 11.sp
                         )
                     }
@@ -646,22 +751,44 @@ fun NativeTwitchPlayer(
                             )
                         }
 
-                        Column {
-                            Text(
-                                text = streamInfo?.displayName ?: channelName,
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 14.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            if (streamInfo != null && streamInfo.gameName.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier
+                                .weight(1f, fill = false)
+                                .clickable {
+                                    if (streamInfo != null) {
+                                        showStreamDetailsDialog = true
+                                    }
+                                }
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
                                 Text(
-                                    text = streamInfo.gameName,
-                                    color = TwitchTextDim,
-                                    fontSize = 11.sp,
+                                    text = streamInfo?.displayName ?: channelName,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
+                                )
+                                if (streamInfo != null && streamInfo.gameName.isNotEmpty()) {
+                                    Text(
+                                        text = "• ${streamInfo.gameName}",
+                                        color = TwitchTextDim,
+                                        fontSize = 11.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                            if (streamInfo != null && streamInfo.title.isNotEmpty()) {
+                                Text(
+                                    text = streamInfo.title,
+                                    color = Color.White.copy(alpha = 0.9f),
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                    modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE)
                                 )
                             }
                         }
@@ -698,24 +825,7 @@ fun NativeTwitchPlayer(
                             }
                         }
 
-                        // Aspect Ratio Toggle (Fit vs Zoom/Fill)
-                        IconButton(
-                            onClick = {
-                                resizeMode = if (resizeMode == AspectRatioFrameLayout.RESIZE_MODE_FIT) {
-                                    AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                                } else {
-                                    AspectRatioFrameLayout.RESIZE_MODE_FIT
-                                }
-                            },
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Icon(
-                                if (resizeMode == AspectRatioFrameLayout.RESIZE_MODE_ZOOM) Icons.Filled.FitScreen else Icons.Filled.CropFree,
-                                contentDescription = "Resize mode",
-                                tint = Color.White,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
+
 
                         // Chat Toggle Button (in landscape / horizontal mode)
                         if (showChatToggle) {
@@ -824,14 +934,14 @@ fun NativeTwitchPlayer(
                             )
                         }
 
-                        // Fullscreen Toggle Button
+                        // Fullscreen / Orientation Toggle Button
                         IconButton(
                             onClick = onToggleFullscreen,
                             modifier = Modifier.size(36.dp)
                         ) {
                             Icon(
                                 if (isFullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
-                                contentDescription = "Fullscreen",
+                                contentDescription = if (isFullscreen) "Exit Fullscreen" else "Enter Fullscreen",
                                 tint = Color.White,
                                 modifier = Modifier.size(24.dp)
                             )
@@ -961,6 +1071,126 @@ fun NativeTwitchPlayer(
                             checkedTrackColor = TwitchPurple
                         )
                     )
+                }
+
+                if (isLowLatency) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.05f)),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            var sliderBufferSeconds by remember(lowLatencyBufferMs) {
+                                mutableFloatStateOf(lowLatencyBufferMs / 1000f)
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Target Buffer",
+                                    color = Color.White,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+
+                                val bufferLabel = when {
+                                    sliderBufferSeconds < 3.0f -> "Ultra Low Delay"
+                                    sliderBufferSeconds < 4.5f -> "Balanced"
+                                    sliderBufferSeconds < 6.0f -> "Safe (Anti-Freeze)"
+                                    else -> "Extra Safe"
+                                }
+                                val badgeColor = when {
+                                    sliderBufferSeconds < 3.0f -> Color(0xFFFFB703)
+                                    sliderBufferSeconds < 4.5f -> TwitchPurple
+                                    sliderBufferSeconds < 6.0f -> TwitchTeal
+                                    else -> Color(0xFF48CAE4)
+                                }
+
+                                Surface(
+                                    color = badgeColor.copy(alpha = 0.2f),
+                                    shape = RoundedCornerShape(6.dp),
+                                    border = BorderStroke(1.dp, badgeColor.copy(alpha = 0.5f))
+                                ) {
+                                    Text(
+                                        text = "${String.format(java.util.Locale.US, "%.1f", sliderBufferSeconds)}s • $bufferLabel",
+                                        color = badgeColor,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                    )
+                                }
+                            }
+
+                            // Preset Chips Row
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                val presets = listOf(
+                                    "Ultra (2.0s)" to 2000,
+                                    "Balanced (3.5s)" to 3500,
+                                    "Safe (5.0s)" to 5000,
+                                    "Extra (6.5s)" to 6500
+                                )
+                                presets.forEach { (label, ms) ->
+                                    val isSelected = Math.abs(sliderBufferSeconds * 1000 - ms) < 250
+                                    Surface(
+                                        onClick = {
+                                            sliderBufferSeconds = ms / 1000f
+                                            onSelectLowLatencyBuffer(ms)
+                                        },
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (isSelected) TwitchPurple else Color.White.copy(alpha = 0.08f),
+                                        border = if (isSelected) null else BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text(
+                                            text = label,
+                                            color = if (isSelected) Color.White else TwitchTextDim,
+                                            fontSize = 10.sp,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                            textAlign = TextAlign.Center,
+                                            modifier = Modifier.padding(vertical = 6.dp)
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Fine-tuning slider
+                            Slider(
+                                value = sliderBufferSeconds,
+                                onValueChange = { sliderBufferSeconds = it },
+                                onValueChangeFinished = {
+                                    onSelectLowLatencyBuffer((sliderBufferSeconds * 1000).toInt())
+                                },
+                                valueRange = 1.5f..8.0f,
+                                steps = 12,
+                                colors = SliderDefaults.colors(
+                                    thumbColor = TwitchPurple,
+                                    activeTrackColor = TwitchPurple,
+                                    inactiveTrackColor = Color.White.copy(alpha = 0.15f)
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+
+                            Text(
+                                text = if (sliderBufferSeconds < 3.5f) {
+                                    "Minimal delay (~1-2s). If stream freezes on network jitter, choose Safe or 4.5s+."
+                                } else {
+                                    "Safe buffer (~2+ chunks ahead) protects against freezes while keeping latency low."
+                                },
+                                color = TwitchTextDim,
+                                fontSize = 11.sp,
+                                lineHeight = 14.sp
+                            )
+                        }
+                    }
                 }
 
                 // Audio Only Toggle
@@ -1116,13 +1346,13 @@ fun NativeTwitchPlayer(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Commercial Break Countdown Overlay",
+                            text = "Hide Video (Placeholder Screen)",
                             color = Color.White,
                             fontWeight = FontWeight.SemiBold,
                             fontSize = 14.sp
                         )
                         Text(
-                            text = "Show streamer avatar & remaining seconds countdown during ads",
+                            text = "Covers video with a 'Commercial break' card. Turn OFF to watch muted ads directly on screen.",
                             color = TwitchTextDim,
                             fontSize = 12.sp
                         )
@@ -1135,6 +1365,170 @@ fun NativeTwitchPlayer(
                             checkedTrackColor = TwitchPurple
                         )
                     )
+                }
+
+                // Desktop 360p Video Swap Toggle
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "360p Video Swap (Experimental)",
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp
+                        )
+                        Text(
+                            text = "Downscales stream to 360p during ads. May cause buffering on live streams.",
+                            color = TwitchTextDim,
+                            fontSize = 12.sp
+                        )
+                    }
+                    Switch(
+                        checked = isAuto360pAds,
+                        onCheckedChange = onToggleAuto360pAds,
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = TwitchPurple
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    if (showStreamDetailsDialog && streamInfo != null) {
+        StreamDetailsDialog(
+            streamInfo = streamInfo,
+            onDismiss = { showStreamDetailsDialog = false }
+        )
+    }
+}
+
+@Composable
+private fun StreamDetailsDialog(
+    streamInfo: LiveStreamItem,
+    onDismiss: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = TwitchDarkCard,
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .wrapContentHeight()
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                // Header with streamer avatar & name
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        if (streamInfo.profileImageUrl.isNotEmpty()) {
+                            AsyncImage(
+                                model = ImageRequest.Builder(LocalContext.current)
+                                    .data(streamInfo.profileImageUrl)
+                                    .crossfade(true)
+                                    .build(),
+                                contentDescription = streamInfo.displayName,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(CircleShape)
+                            )
+                        }
+                        Column {
+                            Text(
+                                text = streamInfo.displayName,
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp
+                            )
+                            if (streamInfo.gameName.isNotEmpty()) {
+                                Text(
+                                    text = streamInfo.gameName,
+                                    color = TwitchPurple,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
+                    }
+
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            Icons.Filled.Close,
+                            contentDescription = "Close",
+                            tint = TwitchTextDim,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+
+                // Title
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = "STREAM TITLE",
+                        color = TwitchTextDim,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = streamInfo.title,
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        lineHeight = 19.sp
+                    )
+                }
+
+                // Stats (Viewers, etc)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Surface(
+                        color = TwitchDark,
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text("VIEWERS", color = TwitchTextDim, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            Text(
+                                text = formatViewers(streamInfo.viewersCount),
+                                color = TwitchRed,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+
+                Button(
+                    onClick = onDismiss,
+                    colors = ButtonDefaults.buttonColors(containerColor = TwitchPurple),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Close", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 }
             }
         }

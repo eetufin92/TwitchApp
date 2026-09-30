@@ -10,6 +10,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -19,9 +21,16 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -32,6 +41,14 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.window.Dialog
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import com.eetu.twitchapp.data.model.LiveStreamItem
+import kotlinx.coroutines.delay
 import com.eetu.twitchapp.data.auth.TwitchAuthManager
 import com.eetu.twitchapp.data.network.TwitchGqlClient
 import com.eetu.twitchapp.ui.components.FloatingResizableChat
@@ -50,6 +67,56 @@ fun MultiStreamScreen(
     var showAddDialog by remember { mutableStateOf(false) }
     var showFloatingChat by remember { mutableStateOf(false) }
     var newChannelInput by remember { mutableStateOf("") }
+
+    // Multi-stream tile dragging state
+    var draggedChannel by remember { mutableStateOf<String?>(null) }
+    var hoveredTargetChannel by remember { mutableStateOf<String?>(null) }
+    var dragOffset by remember { mutableStateOf(Offset.Zero) }
+    var touchInRoot by remember { mutableStateOf(Offset.Zero) }
+
+    val tileBounds = remember { mutableStateMapOf<String, Rect>() }
+    val tileHeaderRoots = remember { mutableStateMapOf<String, Offset>() }
+    val playlistTokenCache = remember { mutableMapOf<String, String>() }
+
+    fun handleDragStart(channel: String, localDown: Offset) {
+        draggedChannel = channel
+        dragOffset = Offset.Zero
+        val headerRoot = tileHeaderRoots[channel] ?: Offset.Zero
+        touchInRoot = headerRoot + localDown
+        hoveredTargetChannel = null
+    }
+
+    fun handleDrag(delta: Offset) {
+        dragOffset += delta
+        touchInRoot += delta
+        val dragged = draggedChannel ?: return
+        hoveredTargetChannel = tileBounds.entries.firstOrNull { (ch, rect) ->
+            ch != dragged && rect.contains(touchInRoot)
+        }?.key
+    }
+
+    fun handleDragEnd() {
+        val dragged = draggedChannel
+        val target = hoveredTargetChannel
+        if (dragged != null && target != null && dragged != target) {
+            val idx1 = streams.indexOf(dragged)
+            val idx2 = streams.indexOf(target)
+            if (idx1 != -1 && idx2 != -1) {
+                val temp = streams[idx1]
+                streams[idx1] = streams[idx2]
+                streams[idx2] = temp
+            }
+        }
+        draggedChannel = null
+        hoveredTargetChannel = null
+        dragOffset = Offset.Zero
+    }
+
+    fun handleDragCancel() {
+        draggedChannel = null
+        hoveredTargetChannel = null
+        dragOffset = Offset.Zero
+    }
 
     Scaffold(
         topBar = {
@@ -122,46 +189,94 @@ fun MultiStreamScreen(
                 // Dynamic Multi-view layout
                 when (streams.size) {
                     1 -> {
-                        StreamTile(
-                            channel = streams[0],
-                            isActiveAudio = activeAudioChannel == streams[0],
-                            onSelectAudio = { activeAudioChannel = streams[0] },
-                            onClose = {
-                                val removed = streams.removeAt(0)
-                                if (activeAudioChannel == removed) activeAudioChannel = streams.firstOrNull() ?: ""
-                            },
-                            modifier = Modifier.fillMaxSize()
-                        )
+                        key(streams[0]) {
+                            StreamTile(
+                                channel = streams[0],
+                                isActiveAudio = activeAudioChannel == streams[0],
+                                onSelectAudio = { activeAudioChannel = streams[0] },
+                                onClose = {
+                                    val removed = streams.removeAt(0)
+                                    tileBounds.remove(removed)
+                                    tileHeaderRoots.remove(removed)
+                                    if (activeAudioChannel == removed) activeAudioChannel = streams.firstOrNull() ?: ""
+                                },
+                                isDragging = draggedChannel == streams[0],
+                                isHoveredTarget = hoveredTargetChannel == streams[0],
+                                hoveredSwapWith = draggedChannel,
+                                dragOffset = if (draggedChannel == streams[0]) dragOffset else Offset.Zero,
+                                onDragStart = { localDown -> handleDragStart(streams[0], localDown) },
+                                onDrag = { delta -> handleDrag(delta) },
+                                onDragEnd = { handleDragEnd() },
+                                onDragCancel = { handleDragCancel() },
+                                onTilePositioned = { rect -> tileBounds[streams[0]] = rect },
+                                onHeaderPositioned = { offset -> tileHeaderRoots[streams[0]] = offset },
+                                canDrag = false,
+                                tokenCache = playlistTokenCache,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
                     }
                     2 -> {
                         if (isLandscape) {
                             Row(modifier = Modifier.fillMaxSize()) {
-                                streams.forEachIndexed { index, ch ->
-                                    StreamTile(
-                                        channel = ch,
-                                        isActiveAudio = activeAudioChannel == ch,
-                                        onSelectAudio = { activeAudioChannel = ch },
-                                        onClose = {
-                                            streams.removeAt(index)
-                                            if (activeAudioChannel == ch) activeAudioChannel = streams.firstOrNull() ?: ""
-                                        },
-                                        modifier = Modifier.weight(1f).fillMaxHeight()
-                                    )
+                                streams.forEach { ch ->
+                                    key(ch) {
+                                        StreamTile(
+                                            channel = ch,
+                                            isActiveAudio = activeAudioChannel == ch,
+                                            onSelectAudio = { activeAudioChannel = ch },
+                                            onClose = {
+                                                val removed = streams.removeAt(streams.indexOf(ch))
+                                                tileBounds.remove(ch)
+                                                tileHeaderRoots.remove(ch)
+                                                if (activeAudioChannel == removed) activeAudioChannel = streams.firstOrNull() ?: ""
+                                            },
+                                            isDragging = draggedChannel == ch,
+                                            isHoveredTarget = hoveredTargetChannel == ch,
+                                            hoveredSwapWith = draggedChannel,
+                                            dragOffset = if (draggedChannel == ch) dragOffset else Offset.Zero,
+                                            onDragStart = { localDown -> handleDragStart(ch, localDown) },
+                                            onDrag = { delta -> handleDrag(delta) },
+                                            onDragEnd = { handleDragEnd() },
+                                            onDragCancel = { handleDragCancel() },
+                                            onTilePositioned = { rect -> tileBounds[ch] = rect },
+                                            onHeaderPositioned = { offset -> tileHeaderRoots[ch] = offset },
+                                            canDrag = true,
+                                            tokenCache = playlistTokenCache,
+                                            modifier = Modifier.weight(1f).fillMaxHeight()
+                                        )
+                                    }
                                 }
                             }
                         } else {
                             Column(modifier = Modifier.fillMaxSize()) {
-                                streams.forEachIndexed { index, ch ->
-                                    StreamTile(
-                                        channel = ch,
-                                        isActiveAudio = activeAudioChannel == ch,
-                                        onSelectAudio = { activeAudioChannel = ch },
-                                        onClose = {
-                                            streams.removeAt(index)
-                                            if (activeAudioChannel == ch) activeAudioChannel = streams.firstOrNull() ?: ""
-                                        },
-                                        modifier = Modifier.weight(1f).fillMaxWidth()
-                                    )
+                                streams.forEach { ch ->
+                                    key(ch) {
+                                        StreamTile(
+                                            channel = ch,
+                                            isActiveAudio = activeAudioChannel == ch,
+                                            onSelectAudio = { activeAudioChannel = ch },
+                                            onClose = {
+                                                val removed = streams.removeAt(streams.indexOf(ch))
+                                                tileBounds.remove(ch)
+                                                tileHeaderRoots.remove(ch)
+                                                if (activeAudioChannel == removed) activeAudioChannel = streams.firstOrNull() ?: ""
+                                            },
+                                            isDragging = draggedChannel == ch,
+                                            isHoveredTarget = hoveredTargetChannel == ch,
+                                            hoveredSwapWith = draggedChannel,
+                                            dragOffset = if (draggedChannel == ch) dragOffset else Offset.Zero,
+                                            onDragStart = { localDown -> handleDragStart(ch, localDown) },
+                                            onDrag = { delta -> handleDrag(delta) },
+                                            onDragEnd = { handleDragEnd() },
+                                            onDragCancel = { handleDragCancel() },
+                                            onTilePositioned = { rect -> tileBounds[ch] = rect },
+                                            onHeaderPositioned = { offset -> tileHeaderRoots[ch] = offset },
+                                            canDrag = true,
+                                            tokenCache = playlistTokenCache,
+                                            modifier = Modifier.weight(1f).fillMaxWidth()
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -169,30 +284,62 @@ fun MultiStreamScreen(
                     3 -> {
                         Column(modifier = Modifier.fillMaxSize()) {
                             // Top 1 stream
-                            StreamTile(
-                                channel = streams[0],
-                                isActiveAudio = activeAudioChannel == streams[0],
-                                onSelectAudio = { activeAudioChannel = streams[0] },
-                                onClose = {
-                                    val removed = streams.removeAt(0)
-                                    if (activeAudioChannel == removed) activeAudioChannel = streams.firstOrNull() ?: ""
-                                },
-                                modifier = Modifier.weight(1.1f).fillMaxWidth()
-                            )
+                            key(streams[0]) {
+                                StreamTile(
+                                    channel = streams[0],
+                                    isActiveAudio = activeAudioChannel == streams[0],
+                                    onSelectAudio = { activeAudioChannel = streams[0] },
+                                    onClose = {
+                                        val removed = streams.removeAt(0)
+                                        tileBounds.remove(removed)
+                                        tileHeaderRoots.remove(removed)
+                                        if (activeAudioChannel == removed) activeAudioChannel = streams.firstOrNull() ?: ""
+                                    },
+                                    isDragging = draggedChannel == streams[0],
+                                    isHoveredTarget = hoveredTargetChannel == streams[0],
+                                    hoveredSwapWith = draggedChannel,
+                                    dragOffset = if (draggedChannel == streams[0]) dragOffset else Offset.Zero,
+                                    onDragStart = { localDown -> handleDragStart(streams[0], localDown) },
+                                    onDrag = { delta -> handleDrag(delta) },
+                                    onDragEnd = { handleDragEnd() },
+                                    onDragCancel = { handleDragCancel() },
+                                    onTilePositioned = { rect -> tileBounds[streams[0]] = rect },
+                                    onHeaderPositioned = { offset -> tileHeaderRoots[streams[0]] = offset },
+                                    canDrag = true,
+                                    tokenCache = playlistTokenCache,
+                                    modifier = Modifier.weight(1.1f).fillMaxWidth()
+                                )
+                            }
                             // Bottom 2 streams
                             Row(modifier = Modifier.weight(0.9f).fillMaxWidth()) {
                                 for (i in 1..2) {
                                     val ch = streams[i]
-                                    StreamTile(
-                                        channel = ch,
-                                        isActiveAudio = activeAudioChannel == ch,
-                                        onSelectAudio = { activeAudioChannel = ch },
-                                        onClose = {
-                                            streams.removeAt(i)
-                                            if (activeAudioChannel == ch) activeAudioChannel = streams.firstOrNull() ?: ""
-                                        },
-                                        modifier = Modifier.weight(1f).fillMaxHeight()
-                                    )
+                                    key(ch) {
+                                        StreamTile(
+                                            channel = ch,
+                                            isActiveAudio = activeAudioChannel == ch,
+                                            onSelectAudio = { activeAudioChannel = ch },
+                                            onClose = {
+                                                val removed = streams.removeAt(streams.indexOf(ch))
+                                                tileBounds.remove(ch)
+                                                tileHeaderRoots.remove(ch)
+                                                if (activeAudioChannel == removed) activeAudioChannel = streams.firstOrNull() ?: ""
+                                            },
+                                            isDragging = draggedChannel == ch,
+                                            isHoveredTarget = hoveredTargetChannel == ch,
+                                            hoveredSwapWith = draggedChannel,
+                                            dragOffset = if (draggedChannel == ch) dragOffset else Offset.Zero,
+                                            onDragStart = { localDown -> handleDragStart(ch, localDown) },
+                                            onDrag = { delta -> handleDrag(delta) },
+                                            onDragEnd = { handleDragEnd() },
+                                            onDragCancel = { handleDragCancel() },
+                                            onTilePositioned = { rect -> tileBounds[ch] = rect },
+                                            onHeaderPositioned = { offset -> tileHeaderRoots[ch] = offset },
+                                            canDrag = true,
+                                            tokenCache = playlistTokenCache,
+                                            modifier = Modifier.weight(1f).fillMaxHeight()
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -203,31 +350,63 @@ fun MultiStreamScreen(
                             Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
                                 for (i in 0..1) {
                                     val ch = streams[i]
-                                    StreamTile(
-                                        channel = ch,
-                                        isActiveAudio = activeAudioChannel == ch,
-                                        onSelectAudio = { activeAudioChannel = ch },
-                                        onClose = {
-                                            streams.removeAt(i)
-                                            if (activeAudioChannel == ch) activeAudioChannel = streams.firstOrNull() ?: ""
-                                        },
-                                        modifier = Modifier.weight(1f).fillMaxHeight()
-                                    )
+                                    key(ch) {
+                                        StreamTile(
+                                            channel = ch,
+                                            isActiveAudio = activeAudioChannel == ch,
+                                            onSelectAudio = { activeAudioChannel = ch },
+                                            onClose = {
+                                                val removed = streams.removeAt(streams.indexOf(ch))
+                                                tileBounds.remove(ch)
+                                                tileHeaderRoots.remove(ch)
+                                                if (activeAudioChannel == removed) activeAudioChannel = streams.firstOrNull() ?: ""
+                                            },
+                                            isDragging = draggedChannel == ch,
+                                            isHoveredTarget = hoveredTargetChannel == ch,
+                                            hoveredSwapWith = draggedChannel,
+                                            dragOffset = if (draggedChannel == ch) dragOffset else Offset.Zero,
+                                            onDragStart = { localDown -> handleDragStart(ch, localDown) },
+                                            onDrag = { delta -> handleDrag(delta) },
+                                            onDragEnd = { handleDragEnd() },
+                                            onDragCancel = { handleDragCancel() },
+                                            onTilePositioned = { rect -> tileBounds[ch] = rect },
+                                            onHeaderPositioned = { offset -> tileHeaderRoots[ch] = offset },
+                                            canDrag = true,
+                                            tokenCache = playlistTokenCache,
+                                            modifier = Modifier.weight(1f).fillMaxHeight()
+                                        )
+                                    }
                                 }
                             }
                             Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
                                 for (i in 2..3) {
                                     val ch = streams[i]
-                                    StreamTile(
-                                        channel = ch,
-                                        isActiveAudio = activeAudioChannel == ch,
-                                        onSelectAudio = { activeAudioChannel = ch },
-                                        onClose = {
-                                            streams.removeAt(i)
-                                            if (activeAudioChannel == ch) activeAudioChannel = streams.firstOrNull() ?: ""
-                                        },
-                                        modifier = Modifier.weight(1f).fillMaxHeight()
-                                    )
+                                    key(ch) {
+                                        StreamTile(
+                                            channel = ch,
+                                            isActiveAudio = activeAudioChannel == ch,
+                                            onSelectAudio = { activeAudioChannel = ch },
+                                            onClose = {
+                                                val removed = streams.removeAt(streams.indexOf(ch))
+                                                tileBounds.remove(ch)
+                                                tileHeaderRoots.remove(ch)
+                                                if (activeAudioChannel == removed) activeAudioChannel = streams.firstOrNull() ?: ""
+                                            },
+                                            isDragging = draggedChannel == ch,
+                                            isHoveredTarget = hoveredTargetChannel == ch,
+                                            hoveredSwapWith = draggedChannel,
+                                            dragOffset = if (draggedChannel == ch) dragOffset else Offset.Zero,
+                                            onDragStart = { localDown -> handleDragStart(ch, localDown) },
+                                            onDrag = { delta -> handleDrag(delta) },
+                                            onDragEnd = { handleDragEnd() },
+                                            onDragCancel = { handleDragCancel() },
+                                            onTilePositioned = { rect -> tileBounds[ch] = rect },
+                                            onHeaderPositioned = { offset -> tileHeaderRoots[ch] = offset },
+                                            canDrag = true,
+                                            tokenCache = playlistTokenCache,
+                                            modifier = Modifier.weight(1f).fillMaxHeight()
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -248,64 +427,333 @@ fun MultiStreamScreen(
         }
     }
 
-    // Add Stream Dialog
+    // Add Stream Dialog with Autocomplete (Followed live channels first, then search)
     if (showAddDialog) {
-        AlertDialog(
-            onDismissRequest = { showAddDialog = false },
-            title = { Text("Add Streamer", fontWeight = FontWeight.Bold) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedTextField(
-                        value = newChannelInput,
-                        onValueChange = { newChannelInput = it },
-                        label = { Text("Channel / Username") },
-                        placeholder = { Text("e.g. tarik, shroud") },
-                        singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = TwitchPurple,
-                            focusedLabelColor = TwitchPurple
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    )
+        AddStreamerDialog(
+            currentStreams = streams.toList(),
+            onAddChannel = { channel ->
+                val clean = channel.trim().lowercase()
+                if (clean.isNotEmpty() && !streams.contains(clean) && streams.size < 4) {
+                    streams.add(clean)
+                    if (activeAudioChannel.isEmpty()) activeAudioChannel = clean
+                }
+                showAddDialog = false
+            },
+            onDismiss = { showAddDialog = false }
+        )
+    }
+}
 
-                    Text("Popular Suggestions:", fontSize = 12.sp, color = TwitchTextDim)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        listOf("tarik", "shroud", "xqc", "eslcs").forEach { suggestion ->
-                            FilterChip(
-                                selected = newChannelInput == suggestion,
-                                onClick = { newChannelInput = suggestion },
-                                label = { Text(suggestion, fontSize = 11.sp) }
-                            )
+@Composable
+private fun AddStreamerDialog(
+    currentStreams: List<String>,
+    onAddChannel: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val authManager = remember { TwitchAuthManager.getInstance(context) }
+    val gqlClient = remember { TwitchGqlClient() }
+
+    var searchQuery by remember { mutableStateOf("") }
+    var followedStreams by remember { mutableStateOf<List<LiveStreamItem>>(emptyList()) }
+    var topStreams by remember { mutableStateOf<List<LiveStreamItem>>(emptyList()) }
+    var searchResults by remember { mutableStateOf<List<LiveStreamItem>>(emptyList()) }
+    var isSearching by remember { mutableStateOf(false) }
+    var isLoadingInitial by remember { mutableStateOf(true) }
+
+    LaunchedEffect(Unit) {
+        isLoadingInitial = true
+        try {
+            val token = authManager.getAuthToken()
+            if (!token.isNullOrEmpty()) {
+                followedStreams = gqlClient.getFollowedLiveStreams(token)
+            }
+            topStreams = gqlClient.getTopStreams(12)
+        } catch (_: Exception) {
+        } finally {
+            isLoadingInitial = false
+        }
+    }
+
+    LaunchedEffect(searchQuery) {
+        val query = searchQuery.trim()
+        if (query.isNotEmpty()) {
+            delay(250)
+            isSearching = true
+            try {
+                searchResults = gqlClient.searchChannels(query, 16)
+            } catch (_: Exception) {
+                searchResults = emptyList()
+            } finally {
+                isSearching = false
+            }
+        } else {
+            searchResults = emptyList()
+            isSearching = false
+        }
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = TwitchDarkCard,
+            border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
+            modifier = Modifier
+                .fillMaxWidth(0.95f)
+                .fillMaxHeight(0.85f)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Add Streamer (${currentStreams.size}/4)",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = Color.White
+                    )
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(24.dp)) {
+                        Icon(Icons.Filled.Close, contentDescription = "Close", tint = TwitchTextDim, modifier = Modifier.size(18.dp))
+                    }
+                }
+
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = { Text("Search streamer or game...", fontSize = 13.sp, color = TwitchTextDim) },
+                    singleLine = true,
+                    leadingIcon = {
+                        Icon(Icons.Filled.Search, contentDescription = null, tint = TwitchTextDim, modifier = Modifier.size(18.dp))
+                    },
+                    trailingIcon = {
+                        if (searchQuery.isNotEmpty()) {
+                            IconButton(onClick = { searchQuery = "" }) {
+                                Icon(Icons.Filled.Close, contentDescription = "Clear", tint = TwitchTextDim, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = TwitchPurple,
+                        unfocusedBorderColor = Color.White.copy(alpha = 0.15f),
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    if (isSearching || (isLoadingInitial && searchQuery.isEmpty())) {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(color = TwitchPurple, modifier = Modifier.size(32.dp))
+                        }
+                    } else if (searchQuery.isNotEmpty()) {
+                        LazyColumn(
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            val cleanQuery = searchQuery.trim().lowercase()
+                            val isAlreadyAdded = currentStreams.any { it.equals(cleanQuery, ignoreCase = true) }
+                            item {
+                                Surface(
+                                    color = TwitchDark,
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable(enabled = !isAlreadyAdded) {
+                                            onAddChannel(cleanQuery)
+                                        }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        Icon(Icons.Filled.AddCircleOutline, contentDescription = null, tint = TwitchPurple)
+                                        Text(
+                                            text = if (isAlreadyAdded) "Channel \"$cleanQuery\" already added" else "Add \"$cleanQuery\" directly",
+                                            color = if (isAlreadyAdded) TwitchTextDim else Color.White,
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
+                                }
+                            }
+
+                            if (searchResults.isEmpty()) {
+                                item {
+                                    Text("No matching streamers found", color = TwitchTextDim, fontSize = 12.sp, modifier = Modifier.padding(vertical = 8.dp))
+                                }
+                            } else {
+                                items(searchResults, key = { it.id.ifEmpty { it.login } }) { item ->
+                                    val added = currentStreams.any { it.equals(item.login, ignoreCase = true) }
+                                    StreamerSearchRow(
+                                        item = item,
+                                        isAdded = added,
+                                        onSelect = { onAddChannel(item.login) }
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        LazyColumn(
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            if (followedStreams.isNotEmpty()) {
+                                item {
+                                    Text(
+                                        text = "FOLLOWED LIVE CHANNELS",
+                                        color = TwitchPurple,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
+                                    )
+                                }
+                                items(followedStreams, key = { "f_${it.id.ifEmpty { it.login }}" }) { item ->
+                                    val added = currentStreams.any { it.equals(item.login, ignoreCase = true) }
+                                    StreamerSearchRow(
+                                        item = item,
+                                        isAdded = added,
+                                        onSelect = { onAddChannel(item.login) }
+                                    )
+                                }
+                            }
+
+                            if (topStreams.isNotEmpty()) {
+                                item {
+                                    Text(
+                                        text = "TOP LIVE CHANNELS",
+                                        color = TwitchTextDim,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(top = 8.dp, bottom = 2.dp)
+                                    )
+                                }
+                                items(topStreams, key = { "t_${it.id.ifEmpty { it.login }}" }) { item ->
+                                    val added = currentStreams.any { it.equals(item.login, ignoreCase = true) }
+                                    StreamerSearchRow(
+                                        item = item,
+                                        isAdded = added,
+                                        onSelect = { onAddChannel(item.login) }
+                                    )
+                                }
+                            }
                         }
                     }
                 }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val clean = newChannelInput.trim().lowercase()
-                        if (clean.isNotEmpty() && !streams.contains(clean) && streams.size < 4) {
-                            streams.add(clean)
-                            if (activeAudioChannel.isEmpty()) activeAudioChannel = clean
-                        }
-                        newChannelInput = ""
-                        showAddDialog = false
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = TwitchPurple)
+            }
+        }
+    }
+}
+
+@Composable
+private fun StreamerSearchRow(
+    item: LiveStreamItem,
+    isAdded: Boolean,
+    onSelect: () -> Unit
+) {
+    Surface(
+        color = TwitchDark,
+        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = !isAdded, onClick = onSelect)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                if (item.profileImageUrl.isNotEmpty()) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(LocalContext.current)
+                            .data(item.profileImageUrl)
+                            .crossfade(true)
+                            .build(),
+                        contentDescription = item.displayName,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(TwitchPurple),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = item.displayName.take(1).uppercase(),
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = item.displayName,
+                        color = if (isAdded) TwitchTextDim else Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (item.gameName.isNotEmpty()) {
+                        Text(
+                            text = item.gameName,
+                            color = TwitchTextDim,
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+
+            if (isAdded) {
+                Surface(
+                    color = Color.White.copy(alpha = 0.1f),
+                    shape = RoundedCornerShape(4.dp)
                 ) {
-                    Text("Add")
+                    Text(
+                        text = "Added",
+                        color = TwitchTextDim,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
                 }
-            },
-            dismissButton = {
-                TextButton(onClick = { showAddDialog = false }) {
-                    Text("Cancel", color = TwitchTextDim)
+            } else if (item.viewersCount > 0) {
+                Surface(
+                    color = TwitchRed.copy(alpha = 0.2f),
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Text(
+                        text = "${item.viewersCount} viewers",
+                        color = TwitchRed,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
                 }
-            },
-            containerColor = TwitchDarkCard
-        )
+            }
+        }
     }
 }
 
@@ -315,6 +763,18 @@ fun StreamTile(
     isActiveAudio: Boolean,
     onSelectAudio: () -> Unit,
     onClose: () -> Unit,
+    isDragging: Boolean = false,
+    isHoveredTarget: Boolean = false,
+    hoveredSwapWith: String? = null,
+    dragOffset: Offset = Offset.Zero,
+    onDragStart: (Offset) -> Unit = {},
+    onDrag: (Offset) -> Unit = {},
+    onDragEnd: () -> Unit = {},
+    onDragCancel: () -> Unit = {},
+    onTilePositioned: (Rect) -> Unit = {},
+    onHeaderPositioned: (Offset) -> Unit = {},
+    canDrag: Boolean = true,
+    tokenCache: MutableMap<String, String>? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -343,9 +803,19 @@ fun StreamTile(
     LaunchedEffect(channel) {
         isLoading = true
         errorMessage = null
-        val tokenResult = gqlClient.getStreamPlaybackAccessToken(channel, authManager.getAuthToken())
-        if (tokenResult != null) {
-            val mediaItem = MediaItem.fromUri(Uri.parse(tokenResult.masterPlaylistUrl))
+        val cachedUrl = tokenCache?.get(channel)
+        val playlistUrl = if (!cachedUrl.isNullOrEmpty()) {
+            cachedUrl
+        } else {
+            val tokenResult = gqlClient.getStreamPlaybackAccessToken(channel, authManager.getAuthToken())
+            if (tokenResult != null) {
+                tokenCache?.put(channel, tokenResult.masterPlaylistUrl)
+                tokenResult.masterPlaylistUrl
+            } else null
+        }
+
+        if (playlistUrl != null) {
+            val mediaItem = MediaItem.fromUri(Uri.parse(playlistUrl))
             exoPlayer.setMediaItem(mediaItem)
             exoPlayer.prepare()
             exoPlayer.play()
@@ -359,22 +829,84 @@ fun StreamTile(
     Card(
         modifier = modifier
             .padding(2.dp)
+            .zIndex(if (isDragging) 100f else 1f)
+            .onGloballyPositioned { coords ->
+                onTilePositioned(coords.boundsInRoot())
+            }
+            .graphicsLayer {
+                if (isDragging) {
+                    translationX = dragOffset.x
+                    translationY = dragOffset.y
+                    scaleX = 1.04f
+                    scaleY = 1.04f
+                    shadowElevation = 24f
+                }
+            }
             .border(
-                width = if (isActiveAudio) 2.dp else 0.5.dp,
-                color = if (isActiveAudio) TwitchPurple else TwitchDarkCard,
+                width = if (isHoveredTarget) 2.5.dp else if (isDragging) 2.dp else if (isActiveAudio) 2.dp else 0.5.dp,
+                color = if (isHoveredTarget) TwitchTeal else if (isDragging) TwitchPurple else if (isActiveAudio) TwitchPurple else TwitchDarkCard,
                 shape = RoundedCornerShape(8.dp)
             ),
         shape = RoundedCornerShape(8.dp),
         colors = CardDefaults.cardColors(containerColor = Color.Black)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Header bar
+            // Header bar (draggable from anywhere except the audio/close buttons)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(TwitchDarkCard)
-                    .clickable { onSelectAudio() }
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                    .background(if (isDragging) TwitchPurple.copy(alpha = 0.35f) else TwitchDarkCard)
+                    .onGloballyPositioned { coords ->
+                        onHeaderPositioned(coords.boundsInRoot().topLeft)
+                    }
+                    .then(
+                        if (canDrag) {
+                            Modifier.pointerInput(channel) {
+                                awaitEachGesture {
+                                    val down = awaitFirstDown(requireUnconsumed = false)
+                                    var isDraggingStarted = false
+                                    var totalDrag = Offset.Zero
+                                    val touchSlop = viewConfiguration.touchSlop
+
+                                    try {
+                                        while (true) {
+                                            val event = awaitPointerEvent()
+                                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                            if (!change.pressed) {
+                                                if (isDraggingStarted) {
+                                                    isDraggingStarted = false
+                                                    onDragEnd()
+                                                } else {
+                                                    onSelectAudio()
+                                                }
+                                                break
+                                            }
+                                            val dragAmount = change.position - change.previousPosition
+                                            totalDrag += dragAmount
+                                            if (!isDraggingStarted) {
+                                                if (totalDrag.getDistance() > touchSlop) {
+                                                    isDraggingStarted = true
+                                                    change.consume()
+                                                    onDragStart(down.position)
+                                                    onDrag(totalDrag)
+                                                }
+                                            } else {
+                                                change.consume()
+                                                onDrag(dragAmount)
+                                            }
+                                        }
+                                    } finally {
+                                        if (isDraggingStarted) {
+                                            onDragCancel()
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            Modifier.clickable { onSelectAudio() }
+                        }
+                    )
+                    .padding(horizontal = 8.dp, vertical = 5.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
@@ -383,6 +915,14 @@ fun StreamTile(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     modifier = Modifier.weight(1f)
                 ) {
+                    if (canDrag) {
+                        Icon(
+                            imageVector = Icons.Filled.DragIndicator,
+                            contentDescription = "Drag from title bar to reorder",
+                            tint = if (isDragging) TwitchPurple else Color.White.copy(alpha = 0.65f),
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
                     Box(
                         modifier = Modifier
                             .size(8.dp)
@@ -462,6 +1002,35 @@ fun StreamTile(
                     )
                 } else if (errorMessage != null) {
                     Text(errorMessage ?: "", color = TwitchTextDim, fontSize = 12.sp)
+                }
+
+                // Visual target feedback during drag & drop
+                if (isHoveredTarget && hoveredSwapWith != null) {
+                    Surface(
+                        color = TwitchTeal.copy(alpha = 0.92f),
+                        shape = RoundedCornerShape(8.dp),
+                        shadowElevation = 6.dp,
+                        modifier = Modifier.align(Alignment.Center)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                Icons.Filled.SwapHoriz,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Text(
+                                text = "Swap with $hoveredSwapWith",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
                 }
             }
         }

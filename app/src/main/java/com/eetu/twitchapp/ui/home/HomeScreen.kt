@@ -18,13 +18,25 @@ import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -63,10 +75,22 @@ fun HomeScreen(
     var isLoading by remember { mutableStateOf(true) }
     var searchQuery by remember { mutableStateOf("") }
     var searchJob by remember { mutableStateOf<Job?>(null) }
+    var isSearchActive by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     var showMenu by remember { mutableStateOf(false) }
     var showUserMenu by remember { mutableStateOf(false) }
     var showLoginDialog by remember { mutableStateOf(false) }
+    val settingsManager = remember { com.eetu.twitchapp.data.TwitchSettingsManager(context) }
+    var isCompactFeed by remember { mutableStateOf(settingsManager.isCompactFeed()) }
+    var thumbnailSizeDp by remember { mutableIntStateOf(settingsManager.getThumbnailSizeDp()) }
     var selectedTab by remember { mutableIntStateOf(if (currentUser != null) 0 else 1) }
+
+    DisposableEffect(Unit) {
+        isCompactFeed = settingsManager.isCompactFeed()
+        thumbnailSizeDp = settingsManager.getThumbnailSizeDp()
+        onDispose { }
+    }
 
     fun loadStreams(query: String = "") {
         isLoading = true
@@ -97,9 +121,15 @@ fun HomeScreen(
     }
 
     // Intercept back gesture when search is active to clear search rather than exiting
-    BackHandler(enabled = searchQuery.isNotEmpty()) {
+    BackHandler(enabled = isSearchActive || searchQuery.isNotEmpty()) {
+        isSearchActive = false
+        val hadQuery = searchQuery.isNotEmpty()
         searchQuery = ""
-        loadStreams("")
+        keyboardController?.hide()
+        focusManager.clearFocus()
+        if (hadQuery) {
+            loadStreams("")
+        }
     }
 
     LaunchedEffect(currentUser) {
@@ -126,200 +156,293 @@ fun HomeScreen(
                     .background(TwitchDark)
                     .statusBarsPadding()
             ) {
+                val inSearchMode = isSearchActive || searchQuery.isNotEmpty()
+
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    // Search Bar
-                    OutlinedTextField(
+                    // Back arrow when in search mode to quickly exit search
+                    if (inSearchMode) {
+                        IconButton(
+                            onClick = {
+                                isSearchActive = false
+                                val hadQuery = searchQuery.isNotEmpty()
+                                searchQuery = ""
+                                searchJob?.cancel()
+                                keyboardController?.hide()
+                                focusManager.clearFocus()
+                                if (hadQuery) {
+                                    loadStreams("")
+                                }
+                            },
+                            modifier = Modifier.size(38.dp)
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Exit search",
+                                tint = Color.White,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+
+                    // Search Bar - Takes full remaining width with pixel-perfect alignment
+                    BasicTextField(
                         value = searchQuery,
                         onValueChange = { newQuery ->
                             searchQuery = newQuery
+                            if (newQuery.isNotEmpty()) {
+                                isSearchActive = true
+                            }
                             searchJob?.cancel()
                             searchJob = coroutineScope.launch {
                                 delay(350)
                                 loadStreams(newQuery)
                             }
                         },
-                        placeholder = { Text("Search streamers or games...", fontSize = 13.sp, color = TwitchTextDim) },
-                        leadingIcon = {
-                            Icon(Icons.Filled.Search, contentDescription = "Search", tint = TwitchPurple, modifier = Modifier.size(20.dp))
-                        },
-                        trailingIcon = {
-                            if (searchQuery.isNotEmpty()) {
-                                IconButton(onClick = {
-                                    searchQuery = ""
-                                    loadStreams()
-                                }) {
-                                    Icon(Icons.Filled.Close, contentDescription = "Clear", tint = TwitchTextDim, modifier = Modifier.size(18.dp))
-                                }
-                            }
-                        },
-                        singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = TwitchPurple,
-                            unfocusedBorderColor = Color.White.copy(alpha = 0.15f),
-                            focusedContainerColor = TwitchDarkCard,
-                            unfocusedContainerColor = TwitchDarkCard
+                        textStyle = TextStyle(
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Normal
                         ),
-                        shape = RoundedCornerShape(12.dp),
+                        cursorBrush = SolidColor(TwitchPurple),
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = {
+                            keyboardController?.hide()
+                            focusManager.clearFocus()
+                        }),
                         modifier = Modifier
                             .weight(1f)
-                            .height(50.dp)
-                    )
-
-                    // Multistream Quick Icon
-                    IconButton(
-                        onClick = onOpenMultiStream,
-                        modifier = Modifier.size(42.dp)
-                    ) {
-                        Icon(Icons.Filled.GridView, contentDescription = "Multistream", tint = TwitchTeal, modifier = Modifier.size(24.dp))
-                    }
-
-                    // Account / Login Avatar
-                    Box {
-                        IconButton(
-                            onClick = {
-                                if (currentUser != null) {
-                                    showUserMenu = true
-                                } else {
-                                    showLoginDialog = true
+                            .height(42.dp)
+                            .onFocusChanged { focusState ->
+                                if (focusState.isFocused) {
+                                    isSearchActive = true
+                                } else if (searchQuery.isEmpty()) {
+                                    isSearchActive = false
                                 }
                             },
-                            modifier = Modifier.size(42.dp)
+                        decorationBox = { innerTextField ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(TwitchDarkCard, RoundedCornerShape(12.dp))
+                                    .border(
+                                        width = 1.dp,
+                                        color = if (isSearchActive) TwitchPurple else Color.White.copy(alpha = 0.15f),
+                                        shape = RoundedCornerShape(12.dp)
+                                    )
+                                    .padding(horizontal = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                if (!inSearchMode) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Search,
+                                        contentDescription = "Search",
+                                        tint = TwitchPurple,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                                Box(
+                                    modifier = Modifier.weight(1f),
+                                    contentAlignment = Alignment.CenterStart
+                                ) {
+                                    if (searchQuery.isEmpty()) {
+                                        Text(
+                                            text = if (inSearchMode) "Search streamers or games..." else "Search streamers...",
+                                            fontSize = 13.sp,
+                                            color = TwitchTextDim
+                                        )
+                                    }
+                                    innerTextField()
+                                }
+                                if (searchQuery.isNotEmpty()) {
+                                    IconButton(
+                                        onClick = {
+                                            searchQuery = ""
+                                            loadStreams("")
+                                        },
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Close,
+                                            contentDescription = "Clear",
+                                            tint = TwitchTextDim,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    )
+
+                    // Secondary actions: Only visible when NOT in search mode
+                    if (!inSearchMode) {
+                        // Multistream Quick Icon
+                        IconButton(
+                            onClick = onOpenMultiStream,
+                            modifier = Modifier.size(38.dp)
                         ) {
-                            val user = currentUser
-                            if (user != null && user.profileImageUrl.isNotEmpty()) {
-                                AsyncImage(
-                                    model = ImageRequest.Builder(LocalContext.current)
-                                        .data(user.profileImageUrl)
-                                        .crossfade(true)
-                                        .build(),
-                                    contentDescription = user.displayName,
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier
-                                        .size(32.dp)
-                                        .clip(CircleShape)
-                                        .border(1.5.dp, TwitchPurple, CircleShape)
-                                )
-                            } else {
-                                Icon(
-                                    imageVector = if (currentUser != null) Icons.Filled.AccountCircle else Icons.AutoMirrored.Filled.Login,
-                                    contentDescription = "Account",
-                                    tint = if (currentUser != null) TwitchPurple else Color.White,
-                                    modifier = Modifier.size(24.dp)
-                                )
+                            Icon(
+                                Icons.Filled.GridView,
+                                contentDescription = "Multistream",
+                                tint = TwitchTeal,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+
+                        // Account / Login Avatar
+                        Box {
+                            IconButton(
+                                onClick = {
+                                    if (currentUser != null) {
+                                        showUserMenu = true
+                                    } else {
+                                        showLoginDialog = true
+                                    }
+                                },
+                                modifier = Modifier.size(38.dp)
+                            ) {
+                                val user = currentUser
+                                if (user != null && user.profileImageUrl.isNotEmpty()) {
+                                    AsyncImage(
+                                        model = ImageRequest.Builder(LocalContext.current)
+                                            .data(user.profileImageUrl)
+                                            .crossfade(true)
+                                            .build(),
+                                        contentDescription = user.displayName,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier
+                                            .size(28.dp)
+                                            .clip(CircleShape)
+                                            .border(1.5.dp, TwitchPurple, CircleShape)
+                                    )
+                                } else {
+                                    Icon(
+                                        imageVector = if (currentUser != null) Icons.Filled.AccountCircle else Icons.AutoMirrored.Filled.Login,
+                                        contentDescription = "Account",
+                                        tint = if (currentUser != null) TwitchPurple else Color.White,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                            }
+
+                            if (currentUser != null) {
+                                DropdownMenu(
+                                    expanded = showUserMenu,
+                                    onDismissRequest = { showUserMenu = false }
+                                ) {
+                                    DropdownMenuItem(
+                                        text = {
+                                            Column {
+                                                Text(
+                                                    text = currentUser?.displayName ?: "",
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color.White
+                                                )
+                                                Text(
+                                                    text = "@${currentUser?.login ?: ""}",
+                                                    fontSize = 12.sp,
+                                                    color = TwitchTextDim
+                                                )
+                                            }
+                                        },
+                                        onClick = { },
+                                        enabled = false
+                                    )
+                                    HorizontalDivider()
+                                    DropdownMenuItem(
+                                        text = { Text("Log Out", color = MaterialTheme.colorScheme.error) },
+                                        leadingIcon = {
+                                            Icon(
+                                                Icons.AutoMirrored.Filled.Logout,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.error
+                                            )
+                                        },
+                                        onClick = {
+                                            showUserMenu = false
+                                            authManager.logout()
+                                            followedStreams = emptyList()
+                                            selectedTab = 1
+                                        }
+                                    )
+                                }
                             }
                         }
 
-                        if (currentUser != null) {
+                        // Settings & Actions Menu
+                        Box {
+                            IconButton(
+                                onClick = { showMenu = true },
+                                modifier = Modifier.size(38.dp)
+                            ) {
+                                Icon(
+                                    Icons.Filled.Tune,
+                                    contentDescription = "Menu",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+
                             DropdownMenu(
-                                expanded = showUserMenu,
-                                onDismissRequest = { showUserMenu = false }
+                                expanded = showMenu,
+                                onDismissRequest = { showMenu = false }
                             ) {
                                 DropdownMenuItem(
-                                    text = {
-                                        Column {
-                                            Text(
-                                                text = currentUser?.displayName ?: "",
-                                                fontWeight = FontWeight.Bold,
-                                                color = Color.White
-                                            )
-                                            Text(
-                                                text = "@${currentUser?.login ?: ""}",
-                                                fontSize = 12.sp,
-                                                color = TwitchTextDim
-                                            )
-                                        }
-                                    },
-                                    onClick = { },
-                                    enabled = false
+                                    text = { Text("Refresh Feed") },
+                                    leadingIcon = { Icon(Icons.Filled.Refresh, contentDescription = null, tint = Color.White) },
+                                    onClick = {
+                                        showMenu = false
+                                        loadStreams(searchQuery)
+                                    }
                                 )
-                                HorizontalDivider()
                                 DropdownMenuItem(
-                                    text = { Text("Log Out", color = MaterialTheme.colorScheme.error) },
+                                    text = { Text(if (isCompactFeed) "Switch to Large Cards" else "Switch to Compact View") },
                                     leadingIcon = {
                                         Icon(
-                                            Icons.AutoMirrored.Filled.Logout,
+                                            imageVector = if (isCompactFeed) Icons.Filled.ViewAgenda else Icons.Filled.ViewCompact,
                                             contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.error
+                                            tint = TwitchPurple
                                         )
                                     },
                                     onClick = {
-                                        showUserMenu = false
-                                        authManager.logout()
-                                        followedStreams = emptyList()
-                                        selectedTab = 1
+                                        showMenu = false
+                                        val next = !isCompactFeed
+                                        isCompactFeed = next
+                                        settingsManager.setCompactFeed(next)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Emote Settings (7TV, BTTV, FFZ)") },
+                                    leadingIcon = { Icon(Icons.Filled.Mood, contentDescription = null, tint = TwitchPurple) },
+                                    onClick = {
+                                        showMenu = false
+                                        onOpenEmoteSettings()
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Ad Muter Settings") },
+                                    leadingIcon = { Icon(Icons.Filled.Shield, contentDescription = null, tint = TwitchTeal) },
+                                    onClick = {
+                                        showMenu = false
+                                        onOpenAdSettings()
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Settings") },
+                                    leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+                                    onClick = {
+                                        showMenu = false
+                                        onOpenSettings()
                                     }
                                 )
                             }
-                        }
-                    }
-
-                    // Refresh Button
-                    IconButton(
-                        onClick = { loadStreams(searchQuery) },
-                        modifier = Modifier.size(42.dp)
-                    ) {
-                        Icon(Icons.Filled.Refresh, contentDescription = "Refresh", tint = Color.White, modifier = Modifier.size(22.dp))
-                    }
-
-                    // Settings Menu
-                    Box {
-                        IconButton(
-                            onClick = { showMenu = true },
-                            modifier = Modifier.size(42.dp)
-                        ) {
-                            Icon(Icons.Filled.Tune, contentDescription = "Menu", tint = Color.White, modifier = Modifier.size(24.dp))
-                        }
-
-                        DropdownMenu(
-                            expanded = showMenu,
-                            onDismissRequest = { showMenu = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("Refresh Feed") },
-                                leadingIcon = { Icon(Icons.Filled.Refresh, contentDescription = null, tint = Color.White) },
-                                onClick = {
-                                    showMenu = false
-                                    loadStreams(searchQuery)
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Multistream") },
-                                leadingIcon = { Icon(Icons.Filled.GridView, contentDescription = null, tint = TwitchTeal) },
-                                onClick = {
-                                    showMenu = false
-                                    onOpenMultiStream()
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Emote Settings (7TV, BTTV, FFZ)") },
-                                leadingIcon = { Icon(Icons.Filled.Mood, contentDescription = null, tint = TwitchPurple) },
-                                onClick = {
-                                    showMenu = false
-                                    onOpenEmoteSettings()
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Ad Muter Settings") },
-                                leadingIcon = { Icon(Icons.Filled.Shield, contentDescription = null, tint = TwitchTeal) },
-                                onClick = {
-                                    showMenu = false
-                                    onOpenAdSettings()
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Settings") },
-                                leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) },
-                                onClick = {
-                                    showMenu = false
-                                    onOpenSettings()
-                                }
-                            )
                         }
                     }
                 }
@@ -401,10 +524,23 @@ fun HomeScreen(
         containerColor = TwitchDark,
         modifier = modifier
     ) { paddingValues ->
-        Box(
+        val pullRefreshState = rememberPullToRefreshState()
+        PullToRefreshBox(
+            isRefreshing = isLoading && (streams.isNotEmpty() || followedStreams.isNotEmpty()),
+            onRefresh = { loadStreams(searchQuery) },
+            state = pullRefreshState,
             modifier = Modifier
                 .fillMaxSize()
-                .padding(paddingValues)
+                .padding(paddingValues),
+            indicator = {
+                PullToRefreshDefaults.Indicator(
+                    state = pullRefreshState,
+                    isRefreshing = isLoading && (streams.isNotEmpty() || followedStreams.isNotEmpty()),
+                    containerColor = TwitchDarkCard,
+                    color = TwitchPurple,
+                    modifier = Modifier.align(Alignment.TopCenter)
+                )
+            }
         ) {
             if (searchQuery.isNotEmpty()) {
                 // Search Results Mode
@@ -428,9 +564,9 @@ fun HomeScreen(
                     }
                 } else {
                     LazyVerticalGrid(
-                        columns = GridCells.Adaptive(minSize = 300.dp),
+                        columns = if (isCompactFeed) GridCells.Adaptive(minSize = 340.dp) else GridCells.Adaptive(minSize = 300.dp),
                         contentPadding = PaddingValues(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(if (isCompactFeed) 8.dp else 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         modifier = Modifier.fillMaxSize()
                     ) {
@@ -445,10 +581,18 @@ fun HomeScreen(
                             )
                         }
                         items(streams, key = { it.id + it.login }) { item ->
-                            LiveStreamCard(
-                                stream = item,
-                                onClick = { onChannelSelected(item.login) }
-                            )
+                            if (isCompactFeed) {
+                                CompactStreamCard(
+                                    stream = item,
+                                    thumbnailWidthDp = thumbnailSizeDp,
+                                    onClick = { onChannelSelected(item.login) }
+                                )
+                            } else {
+                                LiveStreamCard(
+                                    stream = item,
+                                    onClick = { onChannelSelected(item.login) }
+                                )
+                            }
                         }
                     }
                 }
@@ -547,9 +691,9 @@ fun HomeScreen(
                     }
                 } else {
                     LazyVerticalGrid(
-                        columns = GridCells.Adaptive(minSize = 300.dp),
+                        columns = if (isCompactFeed) GridCells.Adaptive(minSize = 340.dp) else GridCells.Adaptive(minSize = 300.dp),
                         contentPadding = PaddingValues(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(if (isCompactFeed) 8.dp else 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         modifier = Modifier.fillMaxSize()
                     ) {
@@ -582,10 +726,18 @@ fun HomeScreen(
                         }
 
                         items(followedStreams, key = { "followed_${it.id}_${it.login}" }) { item ->
-                            LiveStreamCard(
-                                stream = item,
-                                onClick = { onChannelSelected(item.login) }
-                            )
+                            if (isCompactFeed) {
+                                CompactStreamCard(
+                                    stream = item,
+                                    thumbnailWidthDp = thumbnailSizeDp,
+                                    onClick = { onChannelSelected(item.login) }
+                                )
+                            } else {
+                                LiveStreamCard(
+                                    stream = item,
+                                    onClick = { onChannelSelected(item.login) }
+                                )
+                            }
                         }
                     }
                 }
@@ -611,9 +763,9 @@ fun HomeScreen(
                     }
                 } else {
                     LazyVerticalGrid(
-                        columns = GridCells.Adaptive(minSize = 300.dp),
+                        columns = if (isCompactFeed) GridCells.Adaptive(minSize = 340.dp) else GridCells.Adaptive(minSize = 300.dp),
                         contentPadding = PaddingValues(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(if (isCompactFeed) 8.dp else 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         modifier = Modifier.fillMaxSize()
                     ) {
@@ -686,10 +838,18 @@ fun HomeScreen(
                         }
 
                         items(streams, key = { it.id + it.login }) { item ->
-                            LiveStreamCard(
-                                stream = item,
-                                onClick = { onChannelSelected(item.login) }
-                            )
+                            if (isCompactFeed) {
+                                CompactStreamCard(
+                                    stream = item,
+                                    thumbnailWidthDp = thumbnailSizeDp,
+                                    onClick = { onChannelSelected(item.login) }
+                                )
+                            } else {
+                                LiveStreamCard(
+                                    stream = item,
+                                    onClick = { onChannelSelected(item.login) }
+                                )
+                            }
                         }
                     }
                 }
@@ -931,6 +1091,148 @@ fun LiveStreamCard(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun CompactStreamCard(
+    stream: LiveStreamItem,
+    thumbnailWidthDp: Int = 125,
+    onClick: () -> Unit
+) {
+    Card(
+        onClick = onClick,
+        colors = CardDefaults.cardColors(containerColor = TwitchDarkCard),
+        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Left: Compact Thumbnail 16:9
+            Box(
+                modifier = Modifier
+                    .width(thumbnailWidthDp.dp)
+                    .aspectRatio(16f / 9f)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color.Black)
+            ) {
+                if (stream.previewImageUrl.isNotEmpty()) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(LocalContext.current)
+                            .data(stream.previewImageUrl)
+                            .crossfade(true)
+                            .build(),
+                        contentDescription = "Stream preview",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+
+                // Live Tag
+                if (stream.title != "Offline") {
+                    Surface(
+                        color = TwitchRed,
+                        shape = RoundedCornerShape(3.dp),
+                        modifier = Modifier
+                            .padding(4.dp)
+                            .align(Alignment.TopStart)
+                    ) {
+                        Text(
+                            text = "LIVE",
+                            color = Color.White,
+                            fontSize = 8.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                        )
+                    }
+                }
+
+                // Viewers Tag
+                if (stream.viewersCount > 0) {
+                    Surface(
+                        color = Color.Black.copy(alpha = 0.8f),
+                        shape = RoundedCornerShape(3.dp),
+                        modifier = Modifier
+                            .padding(4.dp)
+                            .align(Alignment.BottomStart)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Box(modifier = Modifier.size(4.dp).clip(CircleShape).background(TwitchRed))
+                            Text(
+                                text = formatViewersCount(stream.viewersCount),
+                                color = Color.White,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Right: Stream Info
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (stream.profileImageUrl.isNotEmpty()) {
+                        AsyncImage(
+                            model = ImageRequest.Builder(LocalContext.current)
+                                .data(stream.profileImageUrl)
+                                .crossfade(true)
+                                .build(),
+                            contentDescription = stream.displayName,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .size(20.dp)
+                                .clip(CircleShape)
+                        )
+                    }
+                    Text(
+                        text = stream.displayName,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                if (stream.title.isNotEmpty()) {
+                    Text(
+                        text = stream.title,
+                        color = Color.White.copy(alpha = 0.85f),
+                        fontSize = 11.sp,
+                        lineHeight = 14.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                if (stream.gameName.isNotEmpty()) {
+                    Text(
+                        text = stream.gameName,
+                        color = TwitchTeal,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
         }

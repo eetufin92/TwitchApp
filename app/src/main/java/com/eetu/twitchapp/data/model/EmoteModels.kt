@@ -6,7 +6,8 @@ import com.squareup.moshi.JsonClass
 data class EmoteItem(
     val name: String,
     val url: String,
-    val source: String // "7TV", "BTTV", "FFZ"
+    val highResUrl: String = url,
+    val source: String // "Twitch", "7TV", "BTTV", "FFZ"
 )
 
 // 7TV models

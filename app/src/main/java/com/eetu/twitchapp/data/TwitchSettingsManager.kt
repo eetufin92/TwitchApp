@@ -6,6 +6,19 @@ import android.content.SharedPreferences
 class TwitchSettingsManager(context: Context) {
     private val prefs: SharedPreferences = context.getSharedPreferences("twitch_app_prefs", Context.MODE_PRIVATE)
 
+    init {
+        // One-time migration to ensure show_ad_overlay and auto_360p_ads are disabled by default
+        // so muted ads play directly on screen without being covered by a card or triggering purple screen
+        val prefsVersion = prefs.getInt("prefs_version_v3", 0)
+        if (prefsVersion < 3) {
+            prefs.edit()
+                .putBoolean(KEY_SHOW_AD_OVERLAY, false)
+                .putBoolean(KEY_AUTO_360P_ADS, false)
+                .putInt("prefs_version_v3", 3)
+                .apply()
+        }
+    }
+
     companion object {
         const val KEY_AUTO_MUTE_ADS = "auto_mute_ads"
         const val KEY_SHOW_AD_OVERLAY = "show_ad_overlay"
@@ -23,7 +36,17 @@ class TwitchSettingsManager(context: Context) {
         const val KEY_AUDIO_ONLY = "audio_only"
         const val KEY_SIDE_CHAT_VISIBLE = "side_chat_visible"
         const val KEY_OLED_MODE = "oled_mode"
+        const val KEY_COMPACT_FEED = "compact_feed"
+        const val KEY_LOW_LATENCY_BUFFER_MS = "low_latency_buffer_ms"
+        const val KEY_THUMBNAIL_SIZE_DP = "thumbnail_size_dp"
+        const val KEY_AUTO_360P_ADS = "auto_360p_ads"
     }
+
+    fun isAuto360pAds(): Boolean = prefs.getBoolean(KEY_AUTO_360P_ADS, false)
+    fun setAuto360pAds(enabled: Boolean) = prefs.edit().putBoolean(KEY_AUTO_360P_ADS, enabled).apply()
+
+    fun isCompactFeed(): Boolean = prefs.getBoolean(KEY_COMPACT_FEED, false)
+    fun setCompactFeed(enabled: Boolean) = prefs.edit().putBoolean(KEY_COMPACT_FEED, enabled).apply()
 
     fun isOledMode(): Boolean = prefs.getBoolean(KEY_OLED_MODE, false)
     fun setOledMode(enabled: Boolean) = prefs.edit().putBoolean(KEY_OLED_MODE, enabled).apply()
@@ -31,7 +54,7 @@ class TwitchSettingsManager(context: Context) {
     fun isAutoMuteAds(): Boolean = prefs.getBoolean(KEY_AUTO_MUTE_ADS, true)
     fun setAutoMuteAds(enabled: Boolean) = prefs.edit().putBoolean(KEY_AUTO_MUTE_ADS, enabled).apply()
 
-    fun isShowAdOverlay(): Boolean = prefs.getBoolean(KEY_SHOW_AD_OVERLAY, true)
+    fun isShowAdOverlay(): Boolean = prefs.getBoolean(KEY_SHOW_AD_OVERLAY, false)
     fun setShowAdOverlay(enabled: Boolean) = prefs.edit().putBoolean(KEY_SHOW_AD_OVERLAY, enabled).apply()
 
     fun is7tvEnabled(): Boolean = prefs.getBoolean(KEY_ENABLE_7TV, true)
@@ -72,4 +95,10 @@ class TwitchSettingsManager(context: Context) {
 
     fun isSideChatVisible(): Boolean = prefs.getBoolean(KEY_SIDE_CHAT_VISIBLE, true)
     fun setSideChatVisible(visible: Boolean) = prefs.edit().putBoolean(KEY_SIDE_CHAT_VISIBLE, visible).apply()
+
+    fun getLowLatencyBufferMs(): Int = prefs.getInt(KEY_LOW_LATENCY_BUFFER_MS, 4500)
+    fun setLowLatencyBufferMs(ms: Int) = prefs.edit().putInt(KEY_LOW_LATENCY_BUFFER_MS, ms).apply()
+
+    fun getThumbnailSizeDp(): Int = prefs.getInt(KEY_THUMBNAIL_SIZE_DP, 125)
+    fun setThumbnailSizeDp(sizeDp: Int) = prefs.edit().putInt(KEY_THUMBNAIL_SIZE_DP, sizeDp).apply()
 }
