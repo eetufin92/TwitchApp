@@ -132,6 +132,13 @@ fun HomeScreen(
         }
     }
 
+    val handleChannelSelected: (String) -> Unit = { login ->
+        keyboardController?.hide()
+        focusManager.clearFocus(force = true)
+        isSearchActive = false
+        onChannelSelected(login)
+    }
+
     LaunchedEffect(currentUser) {
         if (currentUser != null) {
             selectedTab = 0
@@ -585,12 +592,12 @@ fun HomeScreen(
                                 CompactStreamCard(
                                     stream = item,
                                     thumbnailWidthDp = thumbnailSizeDp,
-                                    onClick = { onChannelSelected(item.login) }
+                                    onClick = { handleChannelSelected(item.login) }
                                 )
                             } else {
                                 LiveStreamCard(
                                     stream = item,
-                                    onClick = { onChannelSelected(item.login) }
+                                    onClick = { handleChannelSelected(item.login) }
                                 )
                             }
                         }
@@ -730,12 +737,12 @@ fun HomeScreen(
                                 CompactStreamCard(
                                     stream = item,
                                     thumbnailWidthDp = thumbnailSizeDp,
-                                    onClick = { onChannelSelected(item.login) }
+                                    onClick = { handleChannelSelected(item.login) }
                                 )
                             } else {
                                 LiveStreamCard(
                                     stream = item,
-                                    onClick = { onChannelSelected(item.login) }
+                                    onClick = { handleChannelSelected(item.login) }
                                 )
                             }
                         }
@@ -818,7 +825,7 @@ fun HomeScreen(
                                         items(followedStreams, key = { "top_followed_${it.id}_${it.login}" }) { item ->
                                             FollowedChannelCard(
                                                 stream = item,
-                                                onClick = { onChannelSelected(item.login) }
+                                                onClick = { handleChannelSelected(item.login) }
                                             )
                                         }
                                     }
@@ -842,12 +849,12 @@ fun HomeScreen(
                                 CompactStreamCard(
                                     stream = item,
                                     thumbnailWidthDp = thumbnailSizeDp,
-                                    onClick = { onChannelSelected(item.login) }
+                                    onClick = { handleChannelSelected(item.login) }
                                 )
                             } else {
                                 LiveStreamCard(
                                     stream = item,
-                                    onClick = { onChannelSelected(item.login) }
+                                    onClick = { handleChannelSelected(item.login) }
                                 )
                             }
                         }

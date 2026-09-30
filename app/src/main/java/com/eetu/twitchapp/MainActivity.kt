@@ -262,6 +262,7 @@ class MainActivity : ComponentActivity() {
                                 ) {
                                     HomeScreen(
                                         onChannelSelected = { channel ->
+                                            WindowInsetsControllerCompat(window, window.decorView).hide(WindowInsetsCompat.Type.ime())
                                             playerViewModel.playChannel(channel)
                                         },
                                         onOpenMultiStream = {
