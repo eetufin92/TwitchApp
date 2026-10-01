@@ -1,10 +1,23 @@
 package com.eetu.twitchapp.ui.home
 
+import android.content.res.Configuration
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -32,6 +45,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
@@ -156,7 +170,56 @@ fun HomeScreen(
         )
     }
 
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val density = LocalDensity.current
+    val hideThresholdPx = with(density) { 36.dp.toPx() }
+    val showThresholdPx = with(density) { 24.dp.toPx() }
+    var isSearchBarVisible by remember { mutableStateOf(true) }
+
+    LaunchedEffect(isLandscape) {
+        if (!isLandscape) {
+            isSearchBarVisible = true
+        }
+    }
+
+    LaunchedEffect(isSearchActive, searchQuery) {
+        if (isSearchActive || searchQuery.isNotEmpty()) {
+            isSearchBarVisible = true
+        }
+    }
+
+    val nestedScrollConnection = remember(isLandscape, isSearchActive, searchQuery, hideThresholdPx, showThresholdPx) {
+        object : NestedScrollConnection {
+            private var scrollAccumulator = 0f
+
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (isLandscape && !isSearchActive && searchQuery.isEmpty()) {
+                    val delta = available.y
+                    if (delta < 0f) {
+                        if (scrollAccumulator > 0f) scrollAccumulator = 0f
+                        scrollAccumulator += delta
+                        if (scrollAccumulator <= -hideThresholdPx && isSearchBarVisible) {
+                            isSearchBarVisible = false
+                            scrollAccumulator = 0f
+                        }
+                    } else if (delta > 0f) {
+                        if (scrollAccumulator < 0f) scrollAccumulator = 0f
+                        scrollAccumulator += delta
+                        if (scrollAccumulator >= showThresholdPx && !isSearchBarVisible) {
+                            isSearchBarVisible = true
+                            scrollAccumulator = 0f
+                        }
+                    }
+                }
+                return Offset.Zero
+            }
+        }
+    }
+
     Scaffold(
+        modifier = modifier.nestedScroll(nestedScrollConnection),
+        contentWindowInsets = WindowInsets.navigationBars,
         topBar = {
             Column(
                 modifier = Modifier
@@ -165,13 +228,18 @@ fun HomeScreen(
             ) {
                 val inSearchMode = isSearchActive || searchQuery.isNotEmpty()
 
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                AnimatedVisibility(
+                    visible = !isLandscape || isSearchBarVisible || isSearchActive || searchQuery.isNotEmpty(),
+                    enter = expandVertically(animationSpec = tween(220, easing = FastOutSlowInEasing)) + fadeIn(animationSpec = tween(150)),
+                    exit = shrinkVertically(animationSpec = tween(220, easing = FastOutSlowInEasing)) + fadeOut(animationSpec = tween(150))
                 ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
                     // Back arrow when in search mode to quickly exit search
                     if (inSearchMode) {
                         IconButton(
@@ -453,8 +521,9 @@ fun HomeScreen(
                         }
                     }
                 }
+            }
 
-                // Tabs: Following vs Top Live (shown when not searching)
+            // Tabs: Following vs Top Live (shown when not searching)
                 if (searchQuery.isEmpty()) {
                     TabRow(
                         selectedTabIndex = selectedTab,
@@ -528,8 +597,7 @@ fun HomeScreen(
                 }
             }
         },
-        containerColor = TwitchDark,
-        modifier = modifier
+        containerColor = TwitchDark
     ) { paddingValues ->
         val pullRefreshState = rememberPullToRefreshState()
         PullToRefreshBox(
