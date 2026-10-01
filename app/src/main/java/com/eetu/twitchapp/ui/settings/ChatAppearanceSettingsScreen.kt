@@ -39,6 +39,7 @@ fun ChatAppearanceSettingsScreen(
     var customUserAgent by remember { mutableStateOf(settingsManager.getUserAgent()) }
     var isLowLatency by remember { mutableStateOf(settingsManager.isLowLatency()) }
     var lowLatencyBufferMs by remember { mutableIntStateOf(settingsManager.getLowLatencyBufferMs()) }
+    var chatFontSizeSp by remember { mutableFloatStateOf(settingsManager.getChatFontSizeSp()) }
 
     val twitchColors = LocalTwitchColors.current
 
@@ -458,39 +459,220 @@ fun ChatAppearanceSettingsScreen(
                 }
             }
 
-            // Floating Chat Defaults
-            Text("Floating Chat Defaults", color = TwitchPurple, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            // Chat Appearance & Floating Mode
+            Text("Chat Font Size & Floating Mode", color = TwitchPurple, fontWeight = FontWeight.Bold, fontSize = 14.sp)
 
-            Card(colors = CardDefaults.cardColors(containerColor = TwitchDarkCard)) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Chat Background Opacity", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text("Controls transparency when floating over the video player", color = TwitchTextDim, fontSize = 12.sp)
-                    Spacer(modifier = Modifier.height(8.dp))
+            Card(colors = CardDefaults.cardColors(containerColor = twitchColors.card)) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    // Chat Font Size Header
                     Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Slider(
-                            value = chatOpacity,
-                            onValueChange = {
-                                chatOpacity = it
-                                settingsManager.setChatOpacity(it)
-                            },
-                            valueRange = 0.3f..1.0f,
-                            modifier = Modifier.weight(1f),
-                            colors = SliderDefaults.colors(
-                                thumbColor = TwitchPurple,
-                                activeTrackColor = TwitchPurple
+                        Column {
+                            Text("Chat Font Size", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                            Text("Applied to docked chat and floating overlay", color = TwitchTextDim, fontSize = 12.sp)
+                        }
+                        Surface(
+                            color = TwitchPurple.copy(alpha = 0.2f),
+                            shape = RoundedCornerShape(6.dp),
+                            border = BorderStroke(1.dp, TwitchPurple.copy(alpha = 0.5f))
+                        ) {
+                            Text(
+                                text = "${chatFontSizeSp.toInt()} sp",
+                                color = TwitchPurple,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                             )
-                        )
-                        Text(
-                            text = "${(chatOpacity * 100).toInt()}%",
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp
-                        )
+                        }
                     }
+
+                    // Font Size Preset Chips
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        val fontPresets = listOf(
+                            "Small (11)" to 11f,
+                            "Normal (13)" to 13f,
+                            "Large (15)" to 15f,
+                            "Huge (18)" to 18f
+                        )
+                        fontPresets.forEach { (label, size) ->
+                            val isSelected = Math.abs(chatFontSizeSp - size) < 0.5f
+                            Surface(
+                                onClick = {
+                                    chatFontSizeSp = size
+                                    settingsManager.setChatFontSizeSp(size)
+                                },
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isSelected) TwitchPurple else Color.White.copy(alpha = 0.08f),
+                                border = if (isSelected) null else BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text(
+                                    text = label,
+                                    color = if (isSelected) Color.White else TwitchTextDim,
+                                    fontSize = 11.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.padding(vertical = 6.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    // Font Size Slider
+                    Slider(
+                        value = chatFontSizeSp,
+                        onValueChange = {
+                            chatFontSizeSp = it
+                            settingsManager.setChatFontSizeSp(it)
+                        },
+                        valueRange = 10f..22f,
+                        steps = 11,
+                        colors = SliderDefaults.colors(
+                            thumbColor = TwitchPurple,
+                            activeTrackColor = TwitchPurple,
+                            inactiveTrackColor = Color.White.copy(alpha = 0.15f)
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    // Live Chat Preview Box
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = TwitchDark,
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.1f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                text = "Preview",
+                                color = TwitchTextDim,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Surface(
+                                    color = TwitchPurple,
+                                    shape = RoundedCornerShape(3.dp),
+                                    modifier = Modifier.size((chatFontSizeSp * 1.2f).dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text("★", color = Color.White, fontSize = (chatFontSizeSp * 0.75f).sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                                Text(
+                                    text = "Viewer123:",
+                                    color = TwitchTeal,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = chatFontSizeSp.sp
+                                )
+                                Text(
+                                    text = "PogChamp Loving this stream!",
+                                    color = Color.White,
+                                    fontSize = chatFontSizeSp.sp
+                                )
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
+
+                    // Floating Chat Transparency
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text("Floating Chat Transparency", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                            Text("0% is fully transparent text directly over video", color = TwitchTextDim, fontSize = 12.sp)
+                        }
+                        Surface(
+                            color = TwitchPurple.copy(alpha = 0.2f),
+                            shape = RoundedCornerShape(6.dp),
+                            border = BorderStroke(1.dp, TwitchPurple.copy(alpha = 0.5f))
+                        ) {
+                            Text(
+                                text = "${(chatOpacity * 100).toInt()}%",
+                                color = TwitchPurple,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+
+                    // Transparency Preset Chips (100%, 75%, 50%, 25%, 0%)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        val transparencyPresets = listOf(
+                            "100%" to 1.0f,
+                            "75%" to 0.75f,
+                            "50%" to 0.50f,
+                            "25%" to 0.25f,
+                            "0%" to 0.0f
+                        )
+                        transparencyPresets.forEach { (label, valOpacity) ->
+                            val isSelected = Math.abs(chatOpacity - valOpacity) < 0.10f
+                            Surface(
+                                onClick = {
+                                    chatOpacity = valOpacity
+                                    settingsManager.setChatOpacity(valOpacity)
+                                },
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isSelected) TwitchPurple else Color.White.copy(alpha = 0.08f),
+                                border = if (isSelected) null else BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text(
+                                    text = label,
+                                    color = if (isSelected) Color.White else TwitchTextDim,
+                                    fontSize = 11.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.padding(vertical = 6.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    // Transparency Slider (0% to 100%)
+                    Slider(
+                        value = chatOpacity,
+                        onValueChange = {
+                            chatOpacity = it
+                            settingsManager.setChatOpacity(it)
+                        },
+                        valueRange = 0.0f..1.0f,
+                        steps = 3,
+                        colors = SliderDefaults.colors(
+                            thumbColor = TwitchPurple,
+                            activeTrackColor = TwitchPurple,
+                            inactiveTrackColor = Color.White.copy(alpha = 0.15f)
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Text(
+                        text = if (chatOpacity <= 0.05f) {
+                            "0% Transparent: pure chat text floating cleanly over live video with subtle drop shadows."
+                        } else {
+                            "Backdrop opacity at ${(chatOpacity * 100).toInt()}% for readability against bright streams."
+                        },
+                        color = TwitchTextDim,
+                        fontSize = 11.sp,
+                        lineHeight = 14.sp
+                    )
                 }
             }
 

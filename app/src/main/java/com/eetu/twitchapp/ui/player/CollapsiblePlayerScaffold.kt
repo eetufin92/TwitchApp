@@ -108,6 +108,7 @@ fun CollapsiblePlayerScaffold(
     var showLandscapeSideChat by rememberSaveable { mutableStateOf(settingsManager.isSideChatVisible()) }
     var showPortraitChat by rememberSaveable { mutableStateOf(true) }
     var isFullscreen by remember { mutableStateOf(false) }
+    val chatFontSizeSp = settingsManager.getChatFontSizeSp()
 
     var landscapeChatWidthDp by rememberSaveable { mutableFloatStateOf(340f) }
     val defaultVideoHeightDp = remember(configuration.screenWidthDp) {
@@ -702,6 +703,7 @@ fun CollapsiblePlayerScaffold(
                                             messages = chatMessages,
                                             emotes = chatEmotes,
                                             structuredEmotes = chatStructuredEmotes,
+                                            fontSizeSp = chatFontSizeSp,
                                             currentUser = currentUser,
                                             onSendMessage = { text -> chatViewModel.sendMessage(text, currentUser) },
                                             onOpenLogin = { showLoginDialog = true },
@@ -908,6 +910,7 @@ fun CollapsiblePlayerScaffold(
                                         messages = chatMessages,
                                         emotes = chatEmotes,
                                         structuredEmotes = chatStructuredEmotes,
+                                        fontSizeSp = chatFontSizeSp,
                                         currentUser = currentUser,
                                         onSendMessage = { text -> chatViewModel.sendMessage(text, currentUser) },
                                         onOpenLogin = { showLoginDialog = true },
@@ -1071,7 +1074,7 @@ private fun StreamerDetailBar(
                 }
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 // Multistream quick button
                 IconButton(onClick = onOpenMultiStream) {
                     Icon(

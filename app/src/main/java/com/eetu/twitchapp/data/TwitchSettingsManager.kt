@@ -40,6 +40,8 @@ class TwitchSettingsManager(context: Context) {
         const val KEY_LOW_LATENCY_BUFFER_MS = "low_latency_buffer_ms"
         const val KEY_THUMBNAIL_SIZE_DP = "thumbnail_size_dp"
         const val KEY_AUTO_360P_ADS = "auto_360p_ads"
+        const val KEY_CHAT_FONT_SIZE_SP = "chat_font_size_sp"
+        const val KEY_FLOATING_CHAT_BG_ENABLED = "floating_chat_bg_enabled"
     }
 
     fun isAuto360pAds(): Boolean = prefs.getBoolean(KEY_AUTO_360P_ADS, false)
@@ -101,4 +103,10 @@ class TwitchSettingsManager(context: Context) {
 
     fun getThumbnailSizeDp(): Int = prefs.getInt(KEY_THUMBNAIL_SIZE_DP, 125)
     fun setThumbnailSizeDp(sizeDp: Int) = prefs.edit().putInt(KEY_THUMBNAIL_SIZE_DP, sizeDp).apply()
+
+    fun getChatFontSizeSp(): Float = prefs.getFloat(KEY_CHAT_FONT_SIZE_SP, 13f)
+    fun setChatFontSizeSp(sizeSp: Float) = prefs.edit().putFloat(KEY_CHAT_FONT_SIZE_SP, sizeSp.coerceIn(10f, 22f)).apply()
+
+    fun isFloatingChatBgEnabled(): Boolean = prefs.getBoolean(KEY_FLOATING_CHAT_BG_ENABLED, false)
+    fun setFloatingChatBgEnabled(enabled: Boolean) = prefs.edit().putBoolean(KEY_FLOATING_CHAT_BG_ENABLED, enabled).apply()
 }

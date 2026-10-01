@@ -35,7 +35,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
@@ -75,6 +77,7 @@ fun NativeChatView(
     onSendMessage: ((String) -> Unit)? = null,
     onOpenLogin: (() -> Unit)? = null,
     showInput: Boolean = true,
+    backgroundColor: Color? = null,
     listState: LazyListState = rememberLazyListState()
 ) {
     val twitchColors = LocalTwitchColors.current
@@ -197,7 +200,7 @@ fun NativeChatView(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(twitchColors.chatBackground)
+            .background(backgroundColor ?: twitchColors.chatBackground)
     ) {
         // Chat Messages Area
         Box(
@@ -744,6 +747,14 @@ private fun ChatMessageRow(
     val emoteHeight = (fontSizeSp * 1.55f).coerceIn(18f, 32f).dp
     val emoteMaxWidth = (fontSizeSp * 2.3f).coerceIn(22f, 60f).dp
 
+    val textShadow = remember {
+        Shadow(
+            color = Color.Black.copy(alpha = 0.88f),
+            offset = Offset(1f, 1f),
+            blurRadius = 3f
+        )
+    }
+
     FlowRow(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -760,7 +771,8 @@ private fun ChatMessageRow(
             color = userColor,
             fontWeight = FontWeight.Bold,
             fontSize = fontSizeSp.sp,
-            lineHeight = (fontSizeSp * 1.35f).sp
+            lineHeight = (fontSizeSp * 1.35f).sp,
+            style = LocalTextStyle.current.copy(shadow = textShadow)
         )
 
         // Elements: text chunks and clickable emotes
@@ -771,7 +783,8 @@ private fun ChatMessageRow(
                         text = element.content,
                         color = Color.White,
                         fontSize = fontSizeSp.sp,
-                        lineHeight = (fontSizeSp * 1.35f).sp
+                        lineHeight = (fontSizeSp * 1.35f).sp,
+                        style = LocalTextStyle.current.copy(shadow = textShadow)
                     )
                 }
                 is ChatMessageElement.Emote -> {
