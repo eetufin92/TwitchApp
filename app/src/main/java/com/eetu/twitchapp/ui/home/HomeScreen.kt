@@ -61,7 +61,12 @@ import com.eetu.twitchapp.data.auth.TwitchAuthManager
 import com.eetu.twitchapp.data.model.LiveStreamItem
 import com.eetu.twitchapp.data.network.TwitchGqlClient
 import com.eetu.twitchapp.ui.auth.TwitchLoginDialog
+import com.eetu.twitchapp.ui.multistream.AddStreamerDialog
 import com.eetu.twitchapp.ui.theme.*
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -70,14 +75,18 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
+    activePlayingChannel: String = "",
+    activePlayingDisplayName: String = "",
     onChannelSelected: (String) -> Unit,
-    onOpenMultiStream: () -> Unit,
+    onStartMultiStream: (List<String>) -> Unit = {},
+    onOpenMultiStream: () -> Unit = {},
     onOpenSettings: () -> Unit,
     onOpenEmoteSettings: () -> Unit,
     onOpenAdSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val hapticFeedback = LocalHapticFeedback.current
     val authManager = remember { TwitchAuthManager.getInstance(context) }
     val currentUser by authManager.currentUser.collectAsState()
 
@@ -95,6 +104,9 @@ fun HomeScreen(
     var showMenu by remember { mutableStateOf(false) }
     var showUserMenu by remember { mutableStateOf(false) }
     var showLoginDialog by remember { mutableStateOf(false) }
+    var selectedStreamForMenu by remember { mutableStateOf<LiveStreamItem?>(null) }
+    var showPickSecondStreamDialog by remember { mutableStateOf(false) }
+    var primaryStreamToPair by remember { mutableStateOf("") }
     val settingsManager = remember { com.eetu.twitchapp.data.TwitchSettingsManager(context) }
     var isCompactFeed by remember { mutableStateOf(settingsManager.isCompactFeed()) }
     var thumbnailSizeDp by remember { mutableIntStateOf(settingsManager.getThumbnailSizeDp()) }
@@ -358,19 +370,6 @@ fun HomeScreen(
 
                     // Secondary actions: Only visible when NOT in search mode
                     if (!inSearchMode) {
-                        // Multistream Quick Icon
-                        IconButton(
-                            onClick = onOpenMultiStream,
-                            modifier = Modifier.size(38.dp)
-                        ) {
-                            Icon(
-                                Icons.Filled.GridView,
-                                contentDescription = "Multistream",
-                                tint = TwitchTeal,
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
-
                         // Account / Login Avatar
                         Box {
                             IconButton(
@@ -660,12 +659,20 @@ fun HomeScreen(
                                 CompactStreamCard(
                                     stream = item,
                                     thumbnailWidthDp = thumbnailSizeDp,
-                                    onClick = { handleChannelSelected(item.login) }
+                                    onClick = { handleChannelSelected(item.login) },
+                                    onLongClick = {
+                                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        selectedStreamForMenu = item
+                                    }
                                 )
                             } else {
                                 LiveStreamCard(
                                     stream = item,
-                                    onClick = { handleChannelSelected(item.login) }
+                                    onClick = { handleChannelSelected(item.login) },
+                                    onLongClick = {
+                                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        selectedStreamForMenu = item
+                                    }
                                 )
                             }
                         }
@@ -805,12 +812,20 @@ fun HomeScreen(
                                 CompactStreamCard(
                                     stream = item,
                                     thumbnailWidthDp = thumbnailSizeDp,
-                                    onClick = { handleChannelSelected(item.login) }
+                                    onClick = { handleChannelSelected(item.login) },
+                                    onLongClick = {
+                                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        selectedStreamForMenu = item
+                                    }
                                 )
                             } else {
                                 LiveStreamCard(
                                     stream = item,
-                                    onClick = { handleChannelSelected(item.login) }
+                                    onClick = { handleChannelSelected(item.login) },
+                                    onLongClick = {
+                                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        selectedStreamForMenu = item
+                                    }
                                 )
                             }
                         }
@@ -893,7 +908,11 @@ fun HomeScreen(
                                         items(followedStreams, key = { "top_followed_${it.id}_${it.login}" }) { item ->
                                             FollowedChannelCard(
                                                 stream = item,
-                                                onClick = { handleChannelSelected(item.login) }
+                                                onClick = { handleChannelSelected(item.login) },
+                                                onLongClick = {
+                                                    hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                    selectedStreamForMenu = item
+                                                }
                                             )
                                         }
                                     }
@@ -917,12 +936,20 @@ fun HomeScreen(
                                 CompactStreamCard(
                                     stream = item,
                                     thumbnailWidthDp = thumbnailSizeDp,
-                                    onClick = { handleChannelSelected(item.login) }
+                                    onClick = { handleChannelSelected(item.login) },
+                                    onLongClick = {
+                                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        selectedStreamForMenu = item
+                                    }
                                 )
                             } else {
                                 LiveStreamCard(
                                     stream = item,
-                                    onClick = { handleChannelSelected(item.login) }
+                                    onClick = { handleChannelSelected(item.login) },
+                                    onLongClick = {
+                                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        selectedStreamForMenu = item
+                                    }
                                 )
                             }
                         }
@@ -931,18 +958,295 @@ fun HomeScreen(
             }
         }
     }
+
+    if (showPickSecondStreamDialog) {
+        val targetFirst = primaryStreamToPair.ifEmpty { activePlayingChannel }
+        AddStreamerDialog(
+            currentStreams = if (targetFirst.isNotEmpty()) listOf(targetFirst) else emptyList(),
+            title = if (targetFirst.isNotEmpty()) "Pair with $targetFirst" else "Add Stream to MultiStream",
+            onAddChannel = { secondChannel ->
+                showPickSecondStreamDialog = false
+                val clean = secondChannel.trim().lowercase()
+                if (clean.isNotEmpty()) {
+                    if (targetFirst.isNotEmpty() && !targetFirst.equals(clean, ignoreCase = true)) {
+                        onStartMultiStream(listOf(targetFirst, clean))
+                    } else {
+                        onStartMultiStream(listOf(clean))
+                    }
+                }
+            },
+            onDismiss = { showPickSecondStreamDialog = false }
+        )
+    }
+
+    selectedStreamForMenu?.let { item ->
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { selectedStreamForMenu = null },
+            sheetState = sheetState,
+            containerColor = TwitchDarkCard,
+            dragHandle = { BottomSheetDefaults.DragHandle(color = TwitchTextDim) }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
+                    .navigationBarsPadding()
+                    .padding(bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // Streamer info header
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    if (item.profileImageUrl.isNotEmpty()) {
+                        AsyncImage(
+                            model = ImageRequest.Builder(LocalContext.current)
+                                .data(item.profileImageUrl)
+                                .crossfade(true)
+                                .build(),
+                            contentDescription = item.displayName,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(CircleShape)
+                                .border(1.5.dp, TwitchPurple, CircleShape)
+                        )
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = item.displayName,
+                            color = Color.White,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (item.gameName.isNotEmpty()) {
+                            Text(
+                                text = item.gameName,
+                                color = TwitchTeal,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                        if (item.title.isNotEmpty()) {
+                            Text(
+                                text = item.title,
+                                color = TwitchTextDim,
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
+
+                val isCurrentPlaying = activePlayingChannel.isNotEmpty() && activePlayingChannel.equals(item.login, ignoreCase = true)
+                val hasActivePlaying = activePlayingChannel.isNotEmpty() && !isCurrentPlaying
+
+                if (hasActivePlaying) {
+                    // Active stream playing right now -> enter 2-layer mode immediately keeping active stream
+                    Surface(
+                        onClick = {
+                            val targetLogin = item.login
+                            selectedStreamForMenu = null
+                            onStartMultiStream(listOf(activePlayingChannel, targetLogin))
+                        },
+                        color = Color.Transparent,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                            modifier = Modifier.padding(vertical = 10.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(TwitchPurple),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Default.GridView,
+                                    contentDescription = null,
+                                    tint = Color.White
+                                )
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Watch in 2-Layer Multistream",
+                                    color = Color.White,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = "Keep $activePlayingDisplayName playing + add ${item.displayName}",
+                                    color = TwitchTextDim,
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+                    }
+                } else if (isCurrentPlaying) {
+                    // Currently playing stream -> pick 2nd streamer to go 2-layer mode
+                    Surface(
+                        onClick = {
+                            primaryStreamToPair = item.login
+                            selectedStreamForMenu = null
+                            showPickSecondStreamDialog = true
+                        },
+                        color = Color.Transparent,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                            modifier = Modifier.padding(vertical = 10.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(TwitchPurple),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Default.Add,
+                                    contentDescription = null,
+                                    tint = Color.White
+                                )
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Add 2nd Stream to Multistream",
+                                    color = Color.White,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = "Pair with another stream in 2-layer mode",
+                                    color = TwitchTextDim,
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    // No stream playing -> pick 2nd streamer to start 2-layer mode
+                    Surface(
+                        onClick = {
+                            primaryStreamToPair = item.login
+                            selectedStreamForMenu = null
+                            showPickSecondStreamDialog = true
+                        },
+                        color = Color.Transparent,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                            modifier = Modifier.padding(vertical = 10.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(TwitchPurple),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Default.GridView,
+                                    contentDescription = null,
+                                    tint = Color.White
+                                )
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Start 2-Layer Multistream",
+                                    color = Color.White,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = "Watch ${item.displayName} + pick a second stream",
+                                    color = TwitchTextDim,
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Single stream action
+                Surface(
+                    onClick = {
+                        val login = item.login
+                        selectedStreamForMenu = null
+                        handleChannelSelected(login)
+                    },
+                    color = Color.Transparent,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        modifier = Modifier.padding(vertical = 10.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color.White.copy(alpha = 0.1f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Default.PlayArrow,
+                                contentDescription = null,
+                                tint = Color.White
+                            )
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Play Single Stream",
+                                color = Color.White,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "Watch ${item.displayName} in standard player",
+                                color = TwitchTextDim,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun FollowedChannelCard(
     stream: LiveStreamItem,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null
 ) {
+    val shape = RoundedCornerShape(10.dp)
     Card(
-        onClick = onClick,
         colors = CardDefaults.cardColors(containerColor = TwitchDarkCard),
-        shape = RoundedCornerShape(10.dp),
-        modifier = Modifier.width(170.dp)
+        shape = shape,
+        modifier = Modifier
+            .width(170.dp)
+            .clip(shape)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
     ) {
         Column {
             Box(
@@ -1037,16 +1341,24 @@ fun FollowedChannelCard(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun LiveStreamCard(
     stream: LiveStreamItem,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null
 ) {
+    val shape = RoundedCornerShape(10.dp)
     Card(
-        onClick = onClick,
         colors = CardDefaults.cardColors(containerColor = TwitchDarkCard),
-        shape = RoundedCornerShape(10.dp),
-        modifier = Modifier.fillMaxWidth()
+        shape = shape,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
     ) {
         Column {
             // Stream Preview Image with Live Badge & Viewers
@@ -1172,17 +1484,25 @@ fun LiveStreamCard(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun CompactStreamCard(
     stream: LiveStreamItem,
     thumbnailWidthDp: Int = 125,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null
 ) {
+    val shape = RoundedCornerShape(10.dp)
     Card(
-        onClick = onClick,
         colors = CardDefaults.cardColors(containerColor = TwitchDarkCard),
-        shape = RoundedCornerShape(10.dp),
-        modifier = Modifier.fillMaxWidth()
+        shape = shape,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
     ) {
         Row(
             modifier = Modifier

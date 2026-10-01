@@ -5,7 +5,11 @@
 package com.eetu.twitchapp.ui.multistream
 
 import android.net.Uri
-import android.view.ViewGroup
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -15,6 +19,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -32,10 +37,14 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
@@ -52,18 +61,43 @@ import kotlinx.coroutines.delay
 import com.eetu.twitchapp.data.auth.TwitchAuthManager
 import com.eetu.twitchapp.data.network.TwitchGqlClient
 import com.eetu.twitchapp.ui.components.FloatingResizableChat
+import androidx.activity.compose.BackHandler
+import androidx.compose.runtime.saveable.rememberSaveable
 import com.eetu.twitchapp.ui.theme.*
 
 @Composable
 fun MultiStreamScreen(
     initialChannels: List<String> = emptyList(),
+    existingPlayer: ExoPlayer? = null,
+    existingChannel: String? = null,
+    onReturnToSingleStream: (String) -> Unit = {},
+    onCloseAll: () -> Unit = {},
     onNavigateBack: () -> Unit
 ) {
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.screenWidthDp > configuration.screenHeightDp
 
     val streams = remember { mutableStateListOf<String>().apply { addAll(initialChannels) } }
-    var activeAudioChannel by remember { mutableStateOf(streams.firstOrNull() ?: "") }
+    var hasEverHadMultipleStreams by rememberSaveable { mutableStateOf(streams.size >= 2) }
+
+    LaunchedEffect(streams.size) {
+        if (streams.size >= 2) {
+            hasEverHadMultipleStreams = true
+        }
+    }
+
+    // Per-stream independent audio volume and mute tracking
+    val streamVolumes = remember { mutableStateMapOf<String, Float>() }
+    val streamMuted = remember { mutableStateMapOf<String, Boolean>() }
+    var focusedChannel by remember { mutableStateOf(streams.firstOrNull() ?: "") }
+
+    // Top-level disposal: ensure existingPlayer volume is always restored to 1.0f on exit
+    DisposableEffect(Unit) {
+        onDispose {
+            existingPlayer?.volume = 1f
+        }
+    }
+
     var showAddDialog by remember { mutableStateOf(false) }
     var showFloatingChat by remember { mutableStateOf(false) }
     var newChannelInput by remember { mutableStateOf("") }
@@ -118,6 +152,44 @@ fun MultiStreamScreen(
         dragOffset = Offset.Zero
     }
 
+    fun removeStream(channel: String) {
+        val idx = streams.indexOf(channel)
+        if (idx != -1) {
+            streams.removeAt(idx)
+            tileBounds.remove(channel)
+            tileHeaderRoots.remove(channel)
+            streamVolumes.remove(channel)
+            streamMuted.remove(channel)
+            if (focusedChannel == channel) {
+                focusedChannel = streams.firstOrNull() ?: ""
+            }
+            if (hasEverHadMultipleStreams && streams.size == 1) {
+                val remainingChannel = streams[0]
+                streamMuted[remainingChannel] = false
+                streamVolumes[remainingChannel] = 1.0f
+                existingPlayer?.volume = 1f
+                onReturnToSingleStream(remainingChannel)
+            } else if (streams.isEmpty()) {
+                onCloseAll()
+            }
+        }
+    }
+
+    fun handleBackNavigation() {
+        existingPlayer?.volume = 1f
+        if (streams.isNotEmpty() && hasEverHadMultipleStreams) {
+            onReturnToSingleStream(focusedChannel.ifEmpty { streams.first() })
+        } else if (streams.isEmpty()) {
+            onCloseAll()
+        } else {
+            onNavigateBack()
+        }
+    }
+
+    BackHandler(enabled = true) {
+        handleBackNavigation()
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -130,15 +202,15 @@ fun MultiStreamScreen(
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
+                    IconButton(onClick = { handleBackNavigation() }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
                     }
                 },
                 actions = {
                     // Chat toggle
                     IconButton(onClick = { showFloatingChat = !showFloatingChat }) {
                         Icon(
-                            Icons.Filled.Chat,
+                            Icons.AutoMirrored.Filled.Chat,
                             contentDescription = "Toggle Chat",
                             tint = if (showFloatingChat) TwitchPurple else Color.White
                         )
@@ -186,97 +258,76 @@ fun MultiStreamScreen(
                     }
                 }
             } else {
+                @Composable
+                fun RenderStreamTile(
+                    channel: String,
+                    canDrag: Boolean,
+                    modifier: Modifier
+                ) {
+                    key(channel) {
+                        StreamTile(
+                            channel = channel,
+                            existingPlayer = existingPlayer,
+                            existingChannel = existingChannel,
+                            volume = streamVolumes[channel] ?: 1.0f,
+                            onVolumeChange = { streamVolumes[channel] = it },
+                            isMuted = streamMuted[channel] ?: false,
+                            onToggleMute = {
+                                val currentlyMuted = streamMuted[channel] ?: false
+                                streamMuted[channel] = !currentlyMuted
+                            },
+                            isFocused = focusedChannel == channel,
+                            onFocus = { focusedChannel = channel },
+                            onClose = { removeStream(channel) },
+                            isDragging = draggedChannel == channel,
+                            isHoveredTarget = hoveredTargetChannel == channel,
+                            hoveredSwapWith = draggedChannel,
+                            dragOffset = if (draggedChannel == channel) dragOffset else Offset.Zero,
+                            onDragStart = { localDown -> handleDragStart(channel, localDown) },
+                            onDrag = { delta -> handleDrag(delta) },
+                            onDragEnd = { handleDragEnd() },
+                            onDragCancel = { handleDragCancel() },
+                            onTilePositioned = { rect -> tileBounds[channel] = rect },
+                            onHeaderPositioned = { offset -> tileHeaderRoots[channel] = offset },
+                            canDrag = canDrag,
+                            tokenCache = playlistTokenCache,
+                            modifier = modifier
+                        )
+                    }
+                }
+
                 // Dynamic Multi-view layout
                 when (streams.size) {
                     1 -> {
-                        key(streams[0]) {
-                            StreamTile(
-                                channel = streams[0],
-                                isActiveAudio = activeAudioChannel == streams[0],
-                                onSelectAudio = { activeAudioChannel = streams[0] },
-                                onClose = {
-                                    val removed = streams.removeAt(0)
-                                    tileBounds.remove(removed)
-                                    tileHeaderRoots.remove(removed)
-                                    if (activeAudioChannel == removed) activeAudioChannel = streams.firstOrNull() ?: ""
-                                },
-                                isDragging = draggedChannel == streams[0],
-                                isHoveredTarget = hoveredTargetChannel == streams[0],
-                                hoveredSwapWith = draggedChannel,
-                                dragOffset = if (draggedChannel == streams[0]) dragOffset else Offset.Zero,
-                                onDragStart = { localDown -> handleDragStart(streams[0], localDown) },
-                                onDrag = { delta -> handleDrag(delta) },
-                                onDragEnd = { handleDragEnd() },
-                                onDragCancel = { handleDragCancel() },
-                                onTilePositioned = { rect -> tileBounds[streams[0]] = rect },
-                                onHeaderPositioned = { offset -> tileHeaderRoots[streams[0]] = offset },
-                                canDrag = false,
-                                tokenCache = playlistTokenCache,
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        }
+                        RenderStreamTile(
+                            channel = streams[0],
+                            canDrag = false,
+                            modifier = Modifier.fillMaxSize()
+                        )
                     }
                     2 -> {
                         if (isLandscape) {
                             Row(modifier = Modifier.fillMaxSize()) {
                                 streams.forEach { ch ->
-                                    key(ch) {
-                                        StreamTile(
-                                            channel = ch,
-                                            isActiveAudio = activeAudioChannel == ch,
-                                            onSelectAudio = { activeAudioChannel = ch },
-                                            onClose = {
-                                                val removed = streams.removeAt(streams.indexOf(ch))
-                                                tileBounds.remove(ch)
-                                                tileHeaderRoots.remove(ch)
-                                                if (activeAudioChannel == removed) activeAudioChannel = streams.firstOrNull() ?: ""
-                                            },
-                                            isDragging = draggedChannel == ch,
-                                            isHoveredTarget = hoveredTargetChannel == ch,
-                                            hoveredSwapWith = draggedChannel,
-                                            dragOffset = if (draggedChannel == ch) dragOffset else Offset.Zero,
-                                            onDragStart = { localDown -> handleDragStart(ch, localDown) },
-                                            onDrag = { delta -> handleDrag(delta) },
-                                            onDragEnd = { handleDragEnd() },
-                                            onDragCancel = { handleDragCancel() },
-                                            onTilePositioned = { rect -> tileBounds[ch] = rect },
-                                            onHeaderPositioned = { offset -> tileHeaderRoots[ch] = offset },
-                                            canDrag = true,
-                                            tokenCache = playlistTokenCache,
-                                            modifier = Modifier.weight(1f).fillMaxHeight()
-                                        )
-                                    }
+                                    RenderStreamTile(
+                                        channel = ch,
+                                        canDrag = true,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .fillMaxHeight()
+                                    )
                                 }
                             }
                         } else {
                             Column(modifier = Modifier.fillMaxSize()) {
                                 streams.forEach { ch ->
-                                    key(ch) {
-                                        StreamTile(
-                                            channel = ch,
-                                            isActiveAudio = activeAudioChannel == ch,
-                                            onSelectAudio = { activeAudioChannel = ch },
-                                            onClose = {
-                                                val removed = streams.removeAt(streams.indexOf(ch))
-                                                tileBounds.remove(ch)
-                                                tileHeaderRoots.remove(ch)
-                                                if (activeAudioChannel == removed) activeAudioChannel = streams.firstOrNull() ?: ""
-                                            },
-                                            isDragging = draggedChannel == ch,
-                                            isHoveredTarget = hoveredTargetChannel == ch,
-                                            hoveredSwapWith = draggedChannel,
-                                            dragOffset = if (draggedChannel == ch) dragOffset else Offset.Zero,
-                                            onDragStart = { localDown -> handleDragStart(ch, localDown) },
-                                            onDrag = { delta -> handleDrag(delta) },
-                                            onDragEnd = { handleDragEnd() },
-                                            onDragCancel = { handleDragCancel() },
-                                            onTilePositioned = { rect -> tileBounds[ch] = rect },
-                                            onHeaderPositioned = { offset -> tileHeaderRoots[ch] = offset },
-                                            canDrag = true,
-                                            tokenCache = playlistTokenCache,
-                                            modifier = Modifier.weight(1f).fillMaxWidth()
-                                        )
-                                    }
+                                    RenderStreamTile(
+                                        channel = ch,
+                                        canDrag = true,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .fillMaxWidth()
+                                    )
                                 }
                             }
                         }
@@ -284,62 +335,23 @@ fun MultiStreamScreen(
                     3 -> {
                         Column(modifier = Modifier.fillMaxSize()) {
                             // Top 1 stream
-                            key(streams[0]) {
-                                StreamTile(
-                                    channel = streams[0],
-                                    isActiveAudio = activeAudioChannel == streams[0],
-                                    onSelectAudio = { activeAudioChannel = streams[0] },
-                                    onClose = {
-                                        val removed = streams.removeAt(0)
-                                        tileBounds.remove(removed)
-                                        tileHeaderRoots.remove(removed)
-                                        if (activeAudioChannel == removed) activeAudioChannel = streams.firstOrNull() ?: ""
-                                    },
-                                    isDragging = draggedChannel == streams[0],
-                                    isHoveredTarget = hoveredTargetChannel == streams[0],
-                                    hoveredSwapWith = draggedChannel,
-                                    dragOffset = if (draggedChannel == streams[0]) dragOffset else Offset.Zero,
-                                    onDragStart = { localDown -> handleDragStart(streams[0], localDown) },
-                                    onDrag = { delta -> handleDrag(delta) },
-                                    onDragEnd = { handleDragEnd() },
-                                    onDragCancel = { handleDragCancel() },
-                                    onTilePositioned = { rect -> tileBounds[streams[0]] = rect },
-                                    onHeaderPositioned = { offset -> tileHeaderRoots[streams[0]] = offset },
-                                    canDrag = true,
-                                    tokenCache = playlistTokenCache,
-                                    modifier = Modifier.weight(1.1f).fillMaxWidth()
-                                )
-                            }
+                            RenderStreamTile(
+                                channel = streams[0],
+                                canDrag = true,
+                                modifier = Modifier
+                                    .weight(1.1f)
+                                    .fillMaxWidth()
+                            )
                             // Bottom 2 streams
                             Row(modifier = Modifier.weight(0.9f).fillMaxWidth()) {
                                 for (i in 1..2) {
-                                    val ch = streams[i]
-                                    key(ch) {
-                                        StreamTile(
-                                            channel = ch,
-                                            isActiveAudio = activeAudioChannel == ch,
-                                            onSelectAudio = { activeAudioChannel = ch },
-                                            onClose = {
-                                                val removed = streams.removeAt(streams.indexOf(ch))
-                                                tileBounds.remove(ch)
-                                                tileHeaderRoots.remove(ch)
-                                                if (activeAudioChannel == removed) activeAudioChannel = streams.firstOrNull() ?: ""
-                                            },
-                                            isDragging = draggedChannel == ch,
-                                            isHoveredTarget = hoveredTargetChannel == ch,
-                                            hoveredSwapWith = draggedChannel,
-                                            dragOffset = if (draggedChannel == ch) dragOffset else Offset.Zero,
-                                            onDragStart = { localDown -> handleDragStart(ch, localDown) },
-                                            onDrag = { delta -> handleDrag(delta) },
-                                            onDragEnd = { handleDragEnd() },
-                                            onDragCancel = { handleDragCancel() },
-                                            onTilePositioned = { rect -> tileBounds[ch] = rect },
-                                            onHeaderPositioned = { offset -> tileHeaderRoots[ch] = offset },
-                                            canDrag = true,
-                                            tokenCache = playlistTokenCache,
-                                            modifier = Modifier.weight(1f).fillMaxHeight()
-                                        )
-                                    }
+                                    RenderStreamTile(
+                                        channel = streams[i],
+                                        canDrag = true,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .fillMaxHeight()
+                                    )
                                 }
                             }
                         }
@@ -349,64 +361,24 @@ fun MultiStreamScreen(
                         Column(modifier = Modifier.fillMaxSize()) {
                             Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
                                 for (i in 0..1) {
-                                    val ch = streams[i]
-                                    key(ch) {
-                                        StreamTile(
-                                            channel = ch,
-                                            isActiveAudio = activeAudioChannel == ch,
-                                            onSelectAudio = { activeAudioChannel = ch },
-                                            onClose = {
-                                                val removed = streams.removeAt(streams.indexOf(ch))
-                                                tileBounds.remove(ch)
-                                                tileHeaderRoots.remove(ch)
-                                                if (activeAudioChannel == removed) activeAudioChannel = streams.firstOrNull() ?: ""
-                                            },
-                                            isDragging = draggedChannel == ch,
-                                            isHoveredTarget = hoveredTargetChannel == ch,
-                                            hoveredSwapWith = draggedChannel,
-                                            dragOffset = if (draggedChannel == ch) dragOffset else Offset.Zero,
-                                            onDragStart = { localDown -> handleDragStart(ch, localDown) },
-                                            onDrag = { delta -> handleDrag(delta) },
-                                            onDragEnd = { handleDragEnd() },
-                                            onDragCancel = { handleDragCancel() },
-                                            onTilePositioned = { rect -> tileBounds[ch] = rect },
-                                            onHeaderPositioned = { offset -> tileHeaderRoots[ch] = offset },
-                                            canDrag = true,
-                                            tokenCache = playlistTokenCache,
-                                            modifier = Modifier.weight(1f).fillMaxHeight()
-                                        )
-                                    }
+                                    RenderStreamTile(
+                                        channel = streams[i],
+                                        canDrag = true,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .fillMaxHeight()
+                                    )
                                 }
                             }
                             Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
                                 for (i in 2..3) {
-                                    val ch = streams[i]
-                                    key(ch) {
-                                        StreamTile(
-                                            channel = ch,
-                                            isActiveAudio = activeAudioChannel == ch,
-                                            onSelectAudio = { activeAudioChannel = ch },
-                                            onClose = {
-                                                val removed = streams.removeAt(streams.indexOf(ch))
-                                                tileBounds.remove(ch)
-                                                tileHeaderRoots.remove(ch)
-                                                if (activeAudioChannel == removed) activeAudioChannel = streams.firstOrNull() ?: ""
-                                            },
-                                            isDragging = draggedChannel == ch,
-                                            isHoveredTarget = hoveredTargetChannel == ch,
-                                            hoveredSwapWith = draggedChannel,
-                                            dragOffset = if (draggedChannel == ch) dragOffset else Offset.Zero,
-                                            onDragStart = { localDown -> handleDragStart(ch, localDown) },
-                                            onDrag = { delta -> handleDrag(delta) },
-                                            onDragEnd = { handleDragEnd() },
-                                            onDragCancel = { handleDragCancel() },
-                                            onTilePositioned = { rect -> tileBounds[ch] = rect },
-                                            onHeaderPositioned = { offset -> tileHeaderRoots[ch] = offset },
-                                            canDrag = true,
-                                            tokenCache = playlistTokenCache,
-                                            modifier = Modifier.weight(1f).fillMaxHeight()
-                                        )
-                                    }
+                                    RenderStreamTile(
+                                        channel = streams[i],
+                                        canDrag = true,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .fillMaxHeight()
+                                    )
                                 }
                             }
                         }
@@ -417,9 +389,9 @@ fun MultiStreamScreen(
             // Floating Resizable Chat overlay with multi-stream channel switcher
             if (showFloatingChat && streams.isNotEmpty()) {
                 FloatingResizableChat(
-                    channelName = activeAudioChannel.ifEmpty { streams.first() },
+                    channelName = focusedChannel.ifEmpty { streams.first() },
                     availableChannels = streams.toList(),
-                    onChannelSelected = { activeAudioChannel = it },
+                    onChannelSelected = { focusedChannel = it },
                     onClose = { showFloatingChat = false },
                     modifier = Modifier.fillMaxSize()
                 )
@@ -435,7 +407,9 @@ fun MultiStreamScreen(
                 val clean = channel.trim().lowercase()
                 if (clean.isNotEmpty() && !streams.contains(clean) && streams.size < 4) {
                     streams.add(clean)
-                    if (activeAudioChannel.isEmpty()) activeAudioChannel = clean
+                    streamVolumes[clean] = 1.0f
+                    streamMuted[clean] = false
+                    if (focusedChannel.isEmpty()) focusedChannel = clean
                 }
                 showAddDialog = false
             },
@@ -445,8 +419,9 @@ fun MultiStreamScreen(
 }
 
 @Composable
-private fun AddStreamerDialog(
-    currentStreams: List<String>,
+fun AddStreamerDialog(
+    currentStreams: List<String> = emptyList(),
+    title: String? = null,
     onAddChannel: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -514,7 +489,7 @@ private fun AddStreamerDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Add Streamer (${currentStreams.size}/4)",
+                        text = title ?: "Add Streamer (${currentStreams.size}/4)",
                         fontWeight = FontWeight.Bold,
                         fontSize = 16.sp,
                         color = Color.White
@@ -760,9 +735,15 @@ private fun StreamerSearchRow(
 @Composable
 fun StreamTile(
     channel: String,
-    isActiveAudio: Boolean,
-    onSelectAudio: () -> Unit,
+    volume: Float = 1.0f,
+    onVolumeChange: (Float) -> Unit = {},
+    isMuted: Boolean = false,
+    onToggleMute: () -> Unit = {},
+    isFocused: Boolean = false,
+    onFocus: () -> Unit = {},
     onClose: () -> Unit,
+    existingPlayer: ExoPlayer? = null,
+    existingChannel: String? = null,
     isDragging: Boolean = false,
     isHoveredTarget: Boolean = false,
     hoveredSwapWith: String? = null,
@@ -780,27 +761,57 @@ fun StreamTile(
     val context = LocalContext.current
     val gqlClient = remember { TwitchGqlClient() }
     val authManager = remember { TwitchAuthManager.getInstance(context) }
-    var isLoading by remember { mutableStateOf(true) }
+    val isExistingStream = existingPlayer != null && channel.equals(existingChannel, ignoreCase = true)
+    var isLoading by remember { mutableStateOf(!isExistingStream) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var playerViewRef by remember { mutableStateOf<PlayerView?>(null) }
+    var showVolumeSlider by remember { mutableStateOf(false) }
 
-    val exoPlayer = remember(channel) {
-        ExoPlayer.Builder(context).build().apply {
-            repeatMode = Player.REPEAT_MODE_OFF
-            playWhenReady = true
+    val exoPlayer = if (isExistingStream) {
+        checkNotNull(existingPlayer)
+    } else {
+        remember(channel) {
+            val audioAttrs = AudioAttributes.Builder()
+                .setUsage(C.USAGE_MEDIA)
+                .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                .build()
+            ExoPlayer.Builder(context)
+                .setAudioAttributes(audioAttrs, false)
+                .build().apply {
+                    repeatMode = Player.REPEAT_MODE_OFF
+                    playWhenReady = true
+                }
         }
     }
+
+    val effectiveVolume = if (isMuted) 0f else volume.coerceIn(0f, 1f)
 
     DisposableEffect(channel) {
         onDispose {
-            exoPlayer.release()
+            playerViewRef?.player = null
+            if (isExistingStream) {
+                existingPlayer.volume = 1f
+            } else {
+                exoPlayer.stop()
+                exoPlayer.release()
+            }
         }
     }
 
-    LaunchedEffect(isActiveAudio) {
-        exoPlayer.volume = if (isActiveAudio) 1f else 0f
+    LaunchedEffect(effectiveVolume) {
+        exoPlayer.volume = effectiveVolume
     }
 
     LaunchedEffect(channel) {
+        if (isExistingStream) {
+            isLoading = false
+            errorMessage = null
+            if (!exoPlayer.isPlaying) {
+                exoPlayer.play()
+            }
+            return@LaunchedEffect
+        }
+
         isLoading = true
         errorMessage = null
         val cachedUrl = tokenCache?.get(channel)
@@ -843,15 +854,15 @@ fun StreamTile(
                 }
             }
             .border(
-                width = if (isHoveredTarget) 2.5.dp else if (isDragging) 2.dp else if (isActiveAudio) 2.dp else 0.5.dp,
-                color = if (isHoveredTarget) TwitchTeal else if (isDragging) TwitchPurple else if (isActiveAudio) TwitchPurple else TwitchDarkCard,
+                width = if (isHoveredTarget) 2.5.dp else if (isDragging) 2.dp else if (isFocused) 2.dp else 0.5.dp,
+                color = if (isHoveredTarget) TwitchTeal else if (isDragging) TwitchPurple else if (isFocused) TwitchPurple else TwitchDarkCard,
                 shape = RoundedCornerShape(8.dp)
             ),
         shape = RoundedCornerShape(8.dp),
         colors = CardDefaults.cardColors(containerColor = Color.Black)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Header bar (draggable from anywhere except the audio/close buttons)
+            // Header bar (draggable from anywhere except the controls)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -877,7 +888,7 @@ fun StreamTile(
                                                     isDraggingStarted = false
                                                     onDragEnd()
                                                 } else {
-                                                    onSelectAudio()
+                                                    onFocus()
                                                 }
                                                 break
                                             }
@@ -903,7 +914,7 @@ fun StreamTile(
                                 }
                             }
                         } else {
-                            Modifier.clickable { onSelectAudio() }
+                            Modifier.clickable { onFocus() }
                         }
                     )
                     .padding(horizontal = 8.dp, vertical = 5.dp),
@@ -943,15 +954,36 @@ fun StreamTile(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    // Audio toggle button
+                    // Volume percentage pill badge (tap to toggle volume slider)
+                    Surface(
+                        color = if (isMuted || effectiveVolume == 0f) TwitchRed.copy(alpha = 0.22f) else TwitchPurple.copy(alpha = 0.35f),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.clickable { showVolumeSlider = !showVolumeSlider }
+                    ) {
+                        Text(
+                            text = if (isMuted || effectiveVolume == 0f) "Muted" else "${(effectiveVolume * 100).roundToInt()}%",
+                            color = if (isMuted || effectiveVolume == 0f) TwitchRed else Color.White,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                        )
+                    }
+
+                    // Quick mute/unmute audio button
                     IconButton(
-                        onClick = onSelectAudio,
+                        onClick = onToggleMute,
                         modifier = Modifier.size(26.dp)
                     ) {
+                        val icon = when {
+                            isMuted || effectiveVolume == 0f -> Icons.AutoMirrored.Filled.VolumeOff
+                            effectiveVolume < 0.5f -> Icons.AutoMirrored.Filled.VolumeDown
+                            else -> Icons.AutoMirrored.Filled.VolumeUp
+                        }
+                        val tint = if (isMuted || effectiveVolume == 0f) TwitchRed else TwitchGreen
                         Icon(
-                            if (isActiveAudio) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
-                            contentDescription = if (isActiveAudio) "Audio Active" else "Audio Muted",
-                            tint = if (isActiveAudio) TwitchGreen else TwitchTextDim,
+                            imageVector = icon,
+                            contentDescription = if (isMuted || effectiveVolume == 0f) "Unmute" else "Mute",
+                            tint = tint,
                             modifier = Modifier.size(16.dp)
                         )
                     }
@@ -971,12 +1003,70 @@ fun StreamTile(
                 }
             }
 
+            // Expandable Per-Stream Volume Slider
+            AnimatedVisibility(
+                visible = showVolumeSlider,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                Surface(
+                    color = TwitchDarkCard.copy(alpha = 0.95f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 2.dp)
+                    ) {
+                        IconButton(
+                            onClick = onToggleMute,
+                            modifier = Modifier.size(22.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (isMuted || effectiveVolume == 0f) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeDown,
+                                contentDescription = if (isMuted || effectiveVolume == 0f) "Unmute" else "Mute",
+                                tint = if (isMuted || effectiveVolume == 0f) TwitchRed else TwitchGreen,
+                                modifier = Modifier.size(15.dp)
+                            )
+                        }
+                        Slider(
+                            value = effectiveVolume,
+                            onValueChange = { newVol ->
+                                onVolumeChange(newVol)
+                                if (isMuted && newVol > 0f) {
+                                    onToggleMute()
+                                }
+                            },
+                            valueRange = 0f..1f,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(28.dp),
+                            colors = SliderDefaults.colors(
+                                thumbColor = TwitchPurple,
+                                activeTrackColor = TwitchPurple,
+                                inactiveTrackColor = Color.White.copy(alpha = 0.2f)
+                            )
+                        )
+                        Text(
+                            text = "${(effectiveVolume * 100).roundToInt()}%",
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.width(36.dp),
+                            textAlign = TextAlign.End
+                        )
+                    }
+                }
+            }
+
             // Video Player
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .clickable { onSelectAudio() },
+                    .clickable { onFocus() },
                 contentAlignment = Alignment.Center
             ) {
                 AndroidView(
@@ -986,10 +1076,12 @@ fun StreamTile(
                             useController = false
                             resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                             setBackgroundColor(android.graphics.Color.BLACK)
+                            playerViewRef = this
                         }
                     },
                     update = { pv ->
                         pv.player = exoPlayer
+                        playerViewRef = pv
                     },
                     modifier = Modifier.fillMaxSize()
                 )

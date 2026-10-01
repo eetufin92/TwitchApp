@@ -330,9 +330,9 @@ class PlayerViewModel(
     val expandPlayerEvent: SharedFlow<Unit> = _expandPlayerEvent.asSharedFlow()
 
     fun expandPlayer() {
-        if (_isMiniPlayer.value) {
-            _expandPlayerEvent.tryEmit(Unit)
-        }
+        exoPlayer.volume = 1f
+        _isMiniPlayer.value = false
+        _expandPlayerEvent.tryEmit(Unit)
     }
 
     private val _isPlaying = MutableStateFlow(false)
@@ -653,6 +653,7 @@ class PlayerViewModel(
 
         val currentClean = _currentChannel.value.trim().lowercase().removePrefix("@")
         if (!forceReload && currentClean == clean && currentClean.isNotEmpty()) {
+            exoPlayer.volume = 1f
             if (_isMiniPlayer.value) {
                 _expandPlayerEvent.tryEmit(Unit)
             }
@@ -664,6 +665,8 @@ class PlayerViewModel(
             }
             return
         }
+
+        exoPlayer.volume = 1f
 
         completedAdIds.clear()
         endAdBreak()
@@ -757,6 +760,10 @@ class PlayerViewModel(
 
     fun setMiniPlayer(mini: Boolean) {
         _isMiniPlayer.value = mini
+        if (!mini) {
+            exoPlayer.volume = 1f
+            _expandPlayerEvent.tryEmit(Unit)
+        }
     }
 
     fun closePlayback() {

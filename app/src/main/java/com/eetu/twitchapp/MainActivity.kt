@@ -42,6 +42,7 @@ import com.eetu.twitchapp.ui.player.CollapsiblePlayerScaffold
 import com.eetu.twitchapp.ui.player.PlayerViewModel
 import com.eetu.twitchapp.ui.settings.*
 import com.eetu.twitchapp.ui.theme.TwitchAppTheme
+import androidx.media3.common.Player
 
 class MainActivity : ComponentActivity() {
     private var isPlayerVisible = true
@@ -246,12 +247,20 @@ class MainActivity : ComponentActivity() {
                         is Destination.Player -> {
                             isPlayerVisible = true
                             NavEntry(key = destination) {
+                                val activeCh by playerViewModel.currentChannel.collectAsState()
+                                val streamInfo by playerViewModel.streamInfo.collectAsState()
+
                                 CollapsiblePlayerScaffold(
                                     playerViewModel = playerViewModel,
                                     onOpenMultiStream = { channel ->
                                         if (!backStack.any { it is Destination.MultiStream }) {
                                             val initial = if (channel.isNotEmpty()) listOf(channel) else emptyList()
                                             backStack.add(Destination.MultiStream(initial))
+                                        }
+                                    },
+                                    onOpenMultiStreamWithChannels = { channels ->
+                                        if (!backStack.any { it is Destination.MultiStream }) {
+                                            backStack.add(Destination.MultiStream(channels))
                                         }
                                     },
                                     onOpenSettings = {
@@ -261,14 +270,21 @@ class MainActivity : ComponentActivity() {
                                     }
                                 ) {
                                     HomeScreen(
+                                        activePlayingChannel = activeCh,
+                                        activePlayingDisplayName = streamInfo?.displayName ?: activeCh,
                                         onChannelSelected = { channel ->
                                             WindowInsetsControllerCompat(window, window.decorView).hide(WindowInsetsCompat.Type.ime())
                                             playerViewModel.playChannel(channel)
                                         },
+                                        onStartMultiStream = { channels ->
+                                            if (!backStack.any { it is Destination.MultiStream }) {
+                                                backStack.add(Destination.MultiStream(channels))
+                                            }
+                                        },
                                         onOpenMultiStream = {
                                             if (!backStack.any { it is Destination.MultiStream }) {
-                                                val activeCh = playerViewModel.currentChannel.value
-                                                val initial = if (activeCh.isNotEmpty()) listOf(activeCh) else emptyList()
+                                                val ch = playerViewModel.currentChannel.value
+                                                val initial = if (ch.isNotEmpty()) listOf(ch) else emptyList()
                                                 backStack.add(Destination.MultiStream(initial))
                                             }
                                         },
@@ -294,10 +310,59 @@ class MainActivity : ComponentActivity() {
                         is Destination.MultiStream -> {
                             isPlayerVisible = false
                             NavEntry(key = destination) {
+                                val currentCh = playerViewModel.currentChannel.collectAsState().value
                                 MultiStreamScreen(
                                     initialChannels = destination.initialChannels,
+                                    existingPlayer = if (currentCh.isNotEmpty()) playerViewModel.exoPlayer else null,
+                                    existingChannel = currentCh,
+                                    onReturnToSingleStream = { remainingChannel ->
+                                        val current = playerViewModel.currentChannel.value
+                                        if (!current.equals(remainingChannel, ignoreCase = true)) {
+                                            playerViewModel.playChannel(remainingChannel)
+                                        } else {
+                                            playerViewModel.exoPlayer.volume = 1f
+                                            if (!playerViewModel.exoPlayer.isPlaying) {
+                                                if (playerViewModel.exoPlayer.playbackState == Player.STATE_IDLE && playerViewModel.exoPlayer.mediaItemCount > 0) {
+                                                    playerViewModel.exoPlayer.prepare()
+                                                }
+                                                playerViewModel.exoPlayer.play()
+                                            }
+                                        }
+                                        playerViewModel.exoPlayer.volume = 1f
+                                        playerViewModel.setMiniPlayer(false)
+                                        playerViewModel.expandPlayer()
+                                        val idx = backStack.indexOfLast { it is Destination.MultiStream }
+                                        if (idx != -1) {
+                                            backStack.removeAt(idx)
+                                        } else if (backStack.size > 1) {
+                                            backStack.removeAt(backStack.size - 1)
+                                        }
+                                    },
+                                    onCloseAll = {
+                                        playerViewModel.closePlayback()
+                                        val idx = backStack.indexOfLast { it is Destination.MultiStream }
+                                        if (idx != -1) {
+                                            backStack.removeAt(idx)
+                                        } else if (backStack.size > 1) {
+                                            backStack.removeAt(backStack.size - 1)
+                                        }
+                                    },
                                     onNavigateBack = {
-                                        if (backStack.size > 1) backStack.removeAt(backStack.size - 1)
+                                        val current = playerViewModel.currentChannel.value
+                                        if (current.isNotEmpty()) {
+                                            playerViewModel.exoPlayer.volume = 1f
+                                            if (!playerViewModel.exoPlayer.isPlaying) {
+                                                playerViewModel.exoPlayer.play()
+                                            }
+                                            playerViewModel.setMiniPlayer(false)
+                                            playerViewModel.expandPlayer()
+                                        }
+                                        val idx = backStack.indexOfLast { it is Destination.MultiStream }
+                                        if (idx != -1) {
+                                            backStack.removeAt(idx)
+                                        } else if (backStack.size > 1) {
+                                            backStack.removeAt(backStack.size - 1)
+                                        }
                                     }
                                 )
                             }

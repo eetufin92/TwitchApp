@@ -65,7 +65,8 @@ import kotlin.math.roundToInt
 @Composable
 fun CollapsiblePlayerScaffold(
     playerViewModel: PlayerViewModel,
-    onOpenMultiStream: (String) -> Unit,
+    onOpenMultiStream: (String) -> Unit = {},
+    onOpenMultiStreamWithChannels: (List<String>) -> Unit = { channels -> onOpenMultiStream(channels.firstOrNull() ?: "") },
     onOpenSettings: () -> Unit,
     content: @Composable () -> Unit
 ) {
@@ -182,10 +183,27 @@ fun CollapsiblePlayerScaffold(
     val isAuto360pAds by playerViewModel.isAuto360pAds.collectAsState()
     val lowLatencyBufferMs by playerViewModel.lowLatencyBufferMs.collectAsState()
 
+    var showMultiStreamPicker by remember { mutableStateOf(false) }
+
     if (showLoginDialog) {
         TwitchLoginDialog(
             onDismiss = { showLoginDialog = false },
             onLoginSuccess = { showLoginDialog = false }
+        )
+    }
+
+    if (showMultiStreamPicker && currentChannel.isNotEmpty()) {
+        com.eetu.twitchapp.ui.multistream.AddStreamerDialog(
+            currentStreams = listOf(currentChannel),
+            title = "Watch Multistream with ${streamInfo?.displayName ?: currentChannel}",
+            onAddChannel = { secondChannel ->
+                val clean = secondChannel.trim().lowercase()
+                if (clean.isNotEmpty()) {
+                    showMultiStreamPicker = false
+                    onOpenMultiStreamWithChannels(listOf(currentChannel, clean))
+                }
+            },
+            onDismiss = { showMultiStreamPicker = false }
         )
     }
 
@@ -239,6 +257,15 @@ fun CollapsiblePlayerScaffold(
                         animationSpec = tween(durationMillis = 280, easing = FastOutSlowInEasing)
                     )
                 }
+            }
+        }
+    }
+
+    LaunchedEffect(isMiniPlayer) {
+        if (!isMiniPlayer) {
+            isDraggingUpFromMini = false
+            if (collapseFraction.value > 0.01f) {
+                collapseFraction.snapTo(0f)
             }
         }
     }
@@ -664,7 +691,7 @@ fun CollapsiblePlayerScaffold(
                                     ) {
                                         ChatHeader(
                                             channel = currentChannel,
-                                            onOpenMultiStream = { onOpenMultiStream(currentChannel) },
+                                            onOpenMultiStream = { showMultiStreamPicker = true },
                                             onSwitchToFloating = {
                                                 updateLandscapeSideChat(false)
                                                 showFloatingChat = true
@@ -820,7 +847,7 @@ fun CollapsiblePlayerScaffold(
                                     StreamerDetailBar(
                                         streamInfo = streamInfo,
                                         channelName = currentChannel,
-                                        onOpenMultiStream = { onOpenMultiStream(currentChannel) },
+                                        onOpenMultiStream = { showMultiStreamPicker = true },
                                         onToggleFloatingChat = {
                                             showFloatingChat = !showFloatingChat
                                             if (showFloatingChat) {
