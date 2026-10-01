@@ -32,6 +32,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.eetu.twitchapp.data.model.ChatMessage
+import com.eetu.twitchapp.data.model.EmoteItem
+import com.eetu.twitchapp.data.model.TwitchUser
 import com.eetu.twitchapp.ui.chat.ChatViewModel
 import com.eetu.twitchapp.ui.chat.NativeChatView
 import com.eetu.twitchapp.ui.theme.*
@@ -41,6 +44,11 @@ import kotlin.math.roundToInt
 fun FloatingResizableChat(
     channelName: String,
     availableChannels: List<String> = emptyList(),
+    messages: List<ChatMessage>? = null,
+    emotes: Map<String, String>? = null,
+    structuredEmotes: List<EmoteItem>? = null,
+    currentUser: TwitchUser? = null,
+    onSendMessage: ((String) -> Unit)? = null,
     onChannelSelected: (String) -> Unit = {},
     onDock: (() -> Unit)? = null,
     onClose: () -> Unit = {},
@@ -53,13 +61,20 @@ fun FloatingResizableChat(
     var isMinimized by remember { mutableStateOf(false) }
     var opacity by remember { mutableFloatStateOf(0.92f) }
 
-    val chatViewModel = remember { ChatViewModel() }
-    val messages by chatViewModel.messages.collectAsState()
-    val emotes by chatViewModel.emotes.collectAsState()
+    val internalChatViewModel = remember(activeChannel) { ChatViewModel() }
+    val internalMessages by internalChatViewModel.messages.collectAsState()
+    val internalEmotes by internalChatViewModel.emotes.collectAsState()
+    val internalStructuredEmotes by internalChatViewModel.structuredEmotes.collectAsState()
 
     LaunchedEffect(activeChannel) {
-        chatViewModel.setChannel(activeChannel)
+        if (messages == null) {
+            internalChatViewModel.setChannel(activeChannel)
+        }
     }
+
+    val displayMessages = messages ?: internalMessages
+    val displayEmotes = emotes ?: internalEmotes
+    val displayStructuredEmotes = structuredEmotes ?: internalStructuredEmotes
 
     // Position state in pixels
     var offsetX by remember { mutableFloatStateOf(60f) }
@@ -266,10 +281,13 @@ fun FloatingResizableChat(
                     // Native IRC Chat Content
                     Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                         NativeChatView(
-                            messages = messages,
-                            emotes = emotes,
+                            messages = displayMessages,
+                            emotes = displayEmotes,
+                            structuredEmotes = displayStructuredEmotes,
                             fontSizeSp = 11.5f,
-                            showInput = false,
+                            currentUser = currentUser,
+                            onSendMessage = onSendMessage,
+                            showInput = onSendMessage != null,
                             modifier = Modifier.fillMaxSize()
                         )
 

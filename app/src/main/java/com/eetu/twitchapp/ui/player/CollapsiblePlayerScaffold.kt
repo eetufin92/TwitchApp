@@ -5,7 +5,10 @@ import android.content.pm.ActivityInfo
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
@@ -27,7 +30,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -114,6 +119,52 @@ fun CollapsiblePlayerScaffold(
         settingsManager.setSideChatVisible(visible)
     }
 
+    fun cycleLandscapeChatMode(): String {
+        return when {
+            showLandscapeSideChat && !showFloatingChat -> {
+                // Currently Sidebar -> switch to Floating
+                updateLandscapeSideChat(false)
+                showFloatingChat = true
+                "Chat: Floating"
+            }
+            showFloatingChat -> {
+                // Currently Floating -> switch to Off
+                updateLandscapeSideChat(false)
+                showFloatingChat = false
+                "Chat: Off"
+            }
+            else -> {
+                // Currently Off -> switch to Sidebar
+                updateLandscapeSideChat(true)
+                showFloatingChat = false
+                "Chat: Sidebar"
+            }
+        }
+    }
+
+    fun cyclePortraitChatMode(): String {
+        return when {
+            showPortraitChat && !showFloatingChat -> {
+                // Currently Sidebar (docked) -> switch to Floating
+                showPortraitChat = false
+                showFloatingChat = true
+                "Chat: Floating"
+            }
+            showFloatingChat -> {
+                // Currently Floating -> switch to Off
+                showFloatingChat = false
+                showPortraitChat = false
+                "Chat: Off"
+            }
+            else -> {
+                // Currently Off -> switch to Sidebar (docked)
+                showFloatingChat = false
+                showPortraitChat = true
+                "Chat: Sidebar"
+            }
+        }
+    }
+
     LaunchedEffect(currentChannel, currentUser) {
         if (currentChannel.isNotEmpty()) {
             chatViewModel.setChannel(
@@ -138,16 +189,86 @@ fun CollapsiblePlayerScaffold(
         )
     }
 
+    val activity = context as? Activity
+    val isTablet = configuration.smallestScreenWidthDp >= 600
+    val orientationManager = remember(activity) {
+        activity?.let { DeviceOrientationManager(it) }
+    }
+
+    DisposableEffect(orientationManager) {
+        orientationManager?.start()
+        onDispose {
+            orientationManager?.stop()
+        }
+    }
+
+    val collapseFraction = remember { Animatable(0f) }
+    var isDraggingUpFromMini by remember { mutableStateOf(false) }
+
+    val minimizeToMiniPlayer: () -> Unit = {
+        coroutineScope.launch {
+            collapseFraction.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing)
+            )
+            playerViewModel.setMiniPlayer(true)
+            collapseFraction.snapTo(0f)
+        }
+    }
+
+    val expandFromMiniPlayer: () -> Unit = {
+        coroutineScope.launch {
+            isDraggingUpFromMini = false
+            collapseFraction.snapTo(1f)
+            playerViewModel.setMiniPlayer(false)
+            collapseFraction.animateTo(
+                targetValue = 0f,
+                animationSpec = tween(durationMillis = 280, easing = FastOutSlowInEasing)
+            )
+        }
+    }
+
+    LaunchedEffect(playerViewModel) {
+        playerViewModel.expandPlayerEvent.collect {
+            if (isMiniPlayer) {
+                expandFromMiniPlayer()
+            } else if (collapseFraction.value > 0.01f) {
+                coroutineScope.launch {
+                    collapseFraction.animateTo(
+                        targetValue = 0f,
+                        animationSpec = tween(durationMillis = 280, easing = FastOutSlowInEasing)
+                    )
+                }
+            }
+        }
+    }
+
     // System Back Gesture handling:
-    // 1. If in landscape, return to portrait
+    // 1. If in landscape:
+    //    - If in fullscreen, exit fullscreen
+    //    - If on tablet, collapse to miniplayer (or close if already miniplayer), do NOT force portrait
+    //    - If on phone, return to portrait
     BackHandler(enabled = isLandscape) {
-        val act = context as? Activity
-        act?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        if (isFullscreen) {
+            isFullscreen = false
+            updateLandscapeSideChat(true)
+            (context as? MainActivity)?.toggleFullscreen(false)
+        } else if (isTablet) {
+            if (currentChannel.isNotEmpty() && !isMiniPlayer) {
+                minimizeToMiniPlayer()
+            } else if (currentChannel.isNotEmpty() && isMiniPlayer) {
+                playerViewModel.closePlayback()
+            }
+        } else {
+            orientationManager?.requestPortrait() ?: run {
+                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            }
+        }
     }
 
     // 2. If full player is active in portrait, collapse to bottom miniplayer bar
     BackHandler(enabled = !isLandscape && currentChannel.isNotEmpty() && !isMiniPlayer) {
-        playerViewModel.setMiniPlayer(true)
+        minimizeToMiniPlayer()
     }
 
     // 3. If docked in miniplayer, back closes playback
@@ -155,33 +276,138 @@ fun CollapsiblePlayerScaffold(
         playerViewModel.closePlayback()
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         // Base Content (Home Screen, Channels List, Search, etc.)
         content()
 
         // Active Player Layer
         if (currentChannel.isNotEmpty()) {
-            if (isMiniPlayer) {
-                // Docked Miniplayer Bar at the Bottom
-                var miniDragOffsetY by remember { mutableFloatStateOf(0f) }
+            val containerWidthPx = constraints.maxWidth.toFloat()
+            val containerHeightPx = constraints.maxHeight.toFloat()
+            val statusBarTopPx = with(density) { WindowInsets.statusBars.asPaddingValues().calculateTopPadding().toPx() }
+            val maxDragDistancePx = (containerHeightPx * 0.45f).coerceAtLeast(with(density) { 280.dp.toPx() })
 
+            fun handleVerticalDragProgress(delta: Float) {
+                coroutineScope.launch {
+                    val currentDragPx = collapseFraction.value * maxDragDistancePx
+                    val nextDragPx = (currentDragPx + delta).coerceIn(0f, maxDragDistancePx)
+                    val nextFraction = nextDragPx / maxDragDistancePx
+                    collapseFraction.snapTo(nextFraction)
+                }
+            }
+
+            fun handleVerticalDragEnd(velocity: Float, totalDragY: Float) {
+                coroutineScope.launch {
+                    val shouldDismiss = (collapseFraction.value > 0.50f) || (velocity > 1600f && totalDragY > 60f)
+                    if (shouldDismiss && totalDragY > 0f) {
+                        collapseFraction.animateTo(1f, tween(240, easing = FastOutSlowInEasing))
+                        playerViewModel.setMiniPlayer(true)
+                        collapseFraction.snapTo(0f)
+                    } else {
+                        collapseFraction.animateTo(0f, tween(240, easing = FastOutSlowInEasing))
+                    }
+                }
+            }
+
+            // Geometry mapping for targeting miniplayer video slot in bottom-left
+            val miniWidthPx = with(density) { 96.dp.toPx() }
+            val miniCenterX = with(density) { 56.dp.toPx() } // 8.dp padding + 48.dp half-width
+            // Use containerHeightPx directly so the target center lands exactly at the bottom on the miniplayer Surface
+            val miniCenterY = containerHeightPx - with(density) { 34.dp.toPx() } // 68.dp / 2 from bottom of container
+
+            val landscapeVideoWidthPx = if (showLandscapeSideChat && !isFullscreen) {
+                with(density) { (configuration.screenWidthDp - landscapeChatWidthDp).coerceAtLeast(300f).dp.toPx() }
+            } else {
+                containerWidthPx
+            }
+
+            val videoWidthPx = if (isLandscape) landscapeVideoWidthPx else containerWidthPx
+            val videoCenterX = if (isLandscape) (landscapeVideoWidthPx / 2f) else (containerWidthPx / 2f)
+            val videoCenterY = if (isLandscape) (containerHeightPx / 2f) else (statusBarTopPx + (with(density) { portraitVideoHeightDp.dp.toPx() } / 2f))
+
+            val targetScale = (miniWidthPx / videoWidthPx).coerceIn(0.10f, 0.40f)
+            val originXFraction = (videoCenterX / containerWidthPx).coerceIn(0.05f, 0.95f)
+            val originYFraction = (videoCenterY / containerHeightPx).coerceIn(0.05f, 0.95f)
+            val targetDeltaX = miniCenterX - videoCenterX
+            val targetDeltaY = miniCenterY - videoCenterY
+
+            // 1. DOCKED MINIPLAYER or PLACEHOLDER MINI BAR AT BOTTOM
+            // When in miniplayer mode, this bar is at the bottom with the mini preview and streamer info.
+            // Dragging UP on this bar seamlessly transitions into the scaling full player!
+            if (isMiniPlayer || collapseFraction.value > 0.01f || isDraggingUpFromMini) {
                 Surface(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
                         .height(68.dp)
-                        .offset { IntOffset(0, miniDragOffsetY.roundToInt().coerceAtLeast(0)) }
-                        .draggable(
-                            orientation = Orientation.Vertical,
-                            state = rememberDraggableState { delta ->
-                                // Swiping up expands to full screen
-                                if (delta < -15) {
-                                    playerViewModel.setMiniPlayer(false)
-                                }
-                            }
-                        )
+                        .graphicsLayer {
+                            val p = if (isMiniPlayer && !isDraggingUpFromMini) 1f else collapseFraction.value
+                            alpha = if (isMiniPlayer && !isDraggingUpFromMini) 1f else ((p - 0.15f) / 0.85f).coerceIn(0f, 1f)
+                        }
                         .shadow(12.dp)
-                        .clickable { playerViewModel.setMiniPlayer(false) },
+                        .pointerInput(isMiniPlayer) {
+                            if (!isMiniPlayer) return@pointerInput
+                            var totalDragY = 0f
+                            var isDragging = false
+                            var velocityTracker = VelocityTracker()
+                            detectDragGestures(
+                                onDragStart = {
+                                    totalDragY = 0f
+                                    isDragging = false
+                                    velocityTracker = VelocityTracker()
+                                },
+                                onDrag = { change, dragAmount ->
+                                    velocityTracker.addPosition(change.uptimeMillis, change.position)
+                                    totalDragY += dragAmount.y
+                                    if (!isDragging) {
+                                        if (totalDragY < -10f) {
+                                            isDragging = true
+                                            isDraggingUpFromMini = true
+                                            change.consume()
+                                            coroutineScope.launch {
+                                                val progress = (-totalDragY / maxDragDistancePx).coerceIn(0f, 1f)
+                                                collapseFraction.snapTo((1f - progress).coerceIn(0f, 1f))
+                                            }
+                                        }
+                                    } else {
+                                        change.consume()
+                                        coroutineScope.launch {
+                                            val progress = (-totalDragY / maxDragDistancePx).coerceIn(0f, 1f)
+                                            collapseFraction.snapTo((1f - progress).coerceIn(0f, 1f))
+                                        }
+                                    }
+                                },
+                                onDragEnd = {
+                                    if (isDragging) {
+                                        val yVelocity = velocityTracker.calculateVelocity().y
+                                        coroutineScope.launch {
+                                            val shouldExpand = collapseFraction.value <= 0.50f || (yVelocity < -1400f && totalDragY < -40f)
+                                            if (shouldExpand) {
+                                                collapseFraction.animateTo(0f, tween(240, easing = FastOutSlowInEasing))
+                                                playerViewModel.setMiniPlayer(false)
+                                                isDraggingUpFromMini = false
+                                            } else {
+                                                collapseFraction.animateTo(1f, tween(240, easing = FastOutSlowInEasing))
+                                                isDraggingUpFromMini = false
+                                            }
+                                        }
+                                    }
+                                },
+                                onDragCancel = {
+                                    if (isDragging) {
+                                        coroutineScope.launch {
+                                            collapseFraction.animateTo(1f, tween(240, easing = FastOutSlowInEasing))
+                                            isDraggingUpFromMini = false
+                                        }
+                                    }
+                                }
+                            )
+                        }
+                        .clickable {
+                            if (isMiniPlayer && !isDraggingUpFromMini) {
+                                expandFromMiniPlayer()
+                            }
+                        },
                     color = twitchColors.card
                 ) {
                     Row(
@@ -191,29 +417,38 @@ fun CollapsiblePlayerScaffold(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        // 16:9 Video Mini Preview
-                        Box(
-                            modifier = Modifier
-                                .width(96.dp)
-                                .fillMaxHeight()
-                                .clip(RoundedCornerShape(6.dp))
-                                .background(Color.Black)
-                        ) {
-                            AndroidView(
-                                factory = { ctx ->
-                                    PlayerView(ctx).apply {
-                                        player = playerViewModel.exoPlayer
-                                        useController = false
-                                        keepScreenOn = true
-                                        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                                        setBackgroundColor(android.graphics.Color.BLACK)
-                                    }
-                                },
-                                update = { pv ->
-                                    pv.player = playerViewModel.exoPlayer
-                                    pv.keepScreenOn = true
-                                },
-                                modifier = Modifier.fillMaxSize()
+                        if (isMiniPlayer && !isDraggingUpFromMini) {
+                            // 16:9 Video Mini Preview while docked
+                            Box(
+                                modifier = Modifier
+                                    .width(96.dp)
+                                    .fillMaxHeight()
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(Color.Black)
+                            ) {
+                                AndroidView(
+                                    factory = { ctx ->
+                                        PlayerView(ctx).apply {
+                                            player = playerViewModel.exoPlayer
+                                            useController = false
+                                            keepScreenOn = true
+                                            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                                            setBackgroundColor(android.graphics.Color.BLACK)
+                                        }
+                                    },
+                                    update = { pv ->
+                                        pv.player = playerViewModel.exoPlayer
+                                        pv.keepScreenOn = true
+                                    },
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                        } else {
+                            // Reserved space for the scaling video to land / expand from
+                            Spacer(
+                                modifier = Modifier
+                                    .width(96.dp)
+                                    .fillMaxHeight()
                             )
                         }
 
@@ -266,44 +501,34 @@ fun CollapsiblePlayerScaffold(
                         }
                     }
                 }
-            } else {
-                // Full Stream View with Smooth Swipe-Down to dock
-                val animatableDragY = remember { Animatable(0f) }
-                val screenHeightPx = with(density) { configuration.screenHeightDp.dp.toPx() }
-                val dismissThresholdPx = screenHeightPx * 0.38f
+            }
 
-                val playerDragModifier = Modifier.draggable(
-                    orientation = Orientation.Vertical,
-                    state = rememberDraggableState { delta ->
-                        coroutineScope.launch {
-                            val next = (animatableDragY.value + delta).coerceAtLeast(0f)
-                            animatableDragY.snapTo(next)
-                        }
-                    },
-                    onDragStopped = { velocity ->
-                        coroutineScope.launch {
-                            if (animatableDragY.value > dismissThresholdPx || velocity > 1400f) {
-                                animatableDragY.animateTo(screenHeightPx, tween(180))
-                                playerViewModel.setMiniPlayer(true)
-                                animatableDragY.snapTo(0f)
-                            } else {
-                                animatableDragY.animateTo(0f, tween(200))
-                            }
-                        }
-                    }
-                )
-
+            // 2. FULL STREAM VIEW WITH SMOOTH SCALE-DOWN / SCALE-UP
+            // Rendered when in full player or while dragging up from miniplayer
+            if (!isMiniPlayer || isDraggingUpFromMini) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .offset { IntOffset(0, animatableDragY.value.roundToInt().coerceAtLeast(0)) }
-                        .background(twitchColors.background)
+                        .graphicsLayer {
+                            val p = collapseFraction.value
+                            scaleX = 1f - p * (1f - targetScale)
+                            scaleY = 1f - p * (1f - targetScale)
+                            translationX = p * targetDeltaX
+                            translationY = p * targetDeltaY
+                            transformOrigin = TransformOrigin(originXFraction, originYFraction)
+                            shape = RoundedCornerShape((p * 6).dp)
+                            clip = p > 0.01f
+                        }
+                        .drawBehind {
+                            val p = collapseFraction.value
+                            val bgAlpha = (1f - p * 1.5f).coerceIn(0f, 1f)
+                            drawRect(twitchColors.background.copy(alpha = bgAlpha))
+                        }
                 ) {
                     if (isLandscape) {
                         // Landscape / Tablet Split: Video on Left, Optional Chat on Right
                         Row(
-                            modifier = Modifier
-                                .fillMaxSize()
+                            modifier = Modifier.fillMaxSize()
                         ) {
                             NativeTwitchPlayer(
                                 exoPlayer = playerViewModel.exoPlayer,
@@ -329,14 +554,32 @@ fun CollapsiblePlayerScaffold(
                                 onSelectLowLatencyBuffer = { playerViewModel.setLowLatencyBuffer(it) },
                                 onTogglePipEnabled = { playerViewModel.setPipEnabled(it) },
                                 onToggleBackgroundAudio = { playerViewModel.setBackgroundAudio(it) },
-                                onMinimize = { playerViewModel.setMiniPlayer(true) },
+                                onMinimize = { minimizeToMiniPlayer() },
                                 onToggleFullscreen = {
-                                    val act = context as? Activity
-                                    act?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                                    if (isTablet) {
+                                        if (isFullscreen) {
+                                            isFullscreen = false
+                                            updateLandscapeSideChat(true)
+                                            (context as? MainActivity)?.toggleFullscreen(false)
+                                        } else {
+                                            isFullscreen = true
+                                            updateLandscapeSideChat(false)
+                                            (context as? MainActivity)?.toggleFullscreen(true)
+                                        }
+                                    } else {
+                                        if (isFullscreen) {
+                                            isFullscreen = false
+                                            (context as? MainActivity)?.toggleFullscreen(false)
+                                        } else {
+                                            orientationManager?.requestPortrait() ?: run {
+                                                (context as? Activity)?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                                            }
+                                        }
+                                    }
                                 },
                                 isFullscreen = isFullscreen,
                                 showChatToggle = true,
-                                isChatVisible = showLandscapeSideChat || showFloatingChat,
+                                isChatVisible = (showLandscapeSideChat || showFloatingChat) && !isFullscreen,
                                 onToggleChat = {
                                     if (showLandscapeSideChat || showFloatingChat) {
                                         updateLandscapeSideChat(false)
@@ -346,6 +589,18 @@ fun CollapsiblePlayerScaffold(
                                         showFloatingChat = false
                                     }
                                 },
+                                onCycleChatMode = { cycleLandscapeChatMode() },
+                                onToggleFloatingChat = {
+                                    if (showFloatingChat) {
+                                        showFloatingChat = false
+                                        updateLandscapeSideChat(true)
+                                    } else {
+                                        showFloatingChat = true
+                                        updateLandscapeSideChat(false)
+                                    }
+                                },
+                                onVerticalDragProgress = { handleVerticalDragProgress(it) },
+                                onVerticalDragEnd = { vel, total -> handleVerticalDragEnd(vel, total) },
                                 adBreakActive = adBreakActive,
                                 adBreakRemainingSeconds = adBreakRemaining,
                                 isAutoMuteAds = isAutoMuteAds,
@@ -361,64 +616,72 @@ fun CollapsiblePlayerScaffold(
                             )
 
                             // Optional Native IRC Chat on Right with Draggable Splitter
-                            if (showLandscapeSideChat) {
+                            if (showLandscapeSideChat && !isFullscreen) {
                                 val maxChatWidth = (configuration.screenWidthDp * 0.65f).coerceAtLeast(240f)
 
-                                // Draggable Vertical Splitter Handle
-                                Box(
+                                Row(
                                     modifier = Modifier
                                         .fillMaxHeight()
-                                        .width(12.dp)
-                                        .background(Color.Black.copy(alpha = 0.5f))
-                                        .pointerInput(density) {
-                                            detectDragGestures { change, dragAmount ->
-                                                change.consume()
-                                                val deltaDp = dragAmount.x / density.density
-                                                landscapeChatWidthDp = (landscapeChatWidthDp - deltaDp).coerceIn(200f, maxChatWidth)
-                                            }
+                                        .graphicsLayer {
+                                            alpha = (1f - collapseFraction.value * 2.8f).coerceIn(0f, 1f)
                                         }
-                                        .pointerInput(Unit) {
-                                            detectTapGestures(
-                                                onDoubleTap = {
-                                                    landscapeChatWidthDp = 340f
-                                                }
-                                            )
-                                        },
-                                    contentAlignment = Alignment.Center
                                 ) {
+                                    // Draggable Vertical Splitter Handle
                                     Box(
                                         modifier = Modifier
-                                            .width(3.dp)
-                                            .height(36.dp)
-                                            .background(Color.White.copy(alpha = 0.4f), RoundedCornerShape(2.dp))
-                                    )
-                                }
+                                            .fillMaxHeight()
+                                            .width(12.dp)
+                                            .background(Color.Black.copy(alpha = 0.5f))
+                                            .pointerInput(density) {
+                                                detectDragGestures { change, dragAmount ->
+                                                    change.consume()
+                                                    val deltaDp = dragAmount.x / density.density
+                                                    landscapeChatWidthDp = (landscapeChatWidthDp - deltaDp).coerceIn(200f, maxChatWidth)
+                                                }
+                                            }
+                                            .pointerInput(Unit) {
+                                                detectTapGestures(
+                                                    onDoubleTap = {
+                                                        landscapeChatWidthDp = 340f
+                                                    }
+                                                )
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .width(3.dp)
+                                                .height(36.dp)
+                                                .background(Color.White.copy(alpha = 0.4f), RoundedCornerShape(2.dp))
+                                        )
+                                    }
 
-                                Column(
-                                    modifier = Modifier
-                                        .width(landscapeChatWidthDp.dp)
-                                        .fillMaxHeight()
-                                        .background(twitchColors.chatBackground)
-                                ) {
-                                    ChatHeader(
-                                        channel = currentChannel,
-                                        onOpenMultiStream = { onOpenMultiStream(currentChannel) },
-                                        onSwitchToFloating = {
-                                            updateLandscapeSideChat(false)
-                                            showFloatingChat = true
-                                        },
-                                        onClose = { updateLandscapeSideChat(false) }
-                                    )
-                                    NativeChatView(
-                                        messages = chatMessages,
-                                        emotes = chatEmotes,
-                                        structuredEmotes = chatStructuredEmotes,
-                                        currentUser = currentUser,
-                                        onSendMessage = { text -> chatViewModel.sendMessage(text, currentUser) },
-                                        onOpenLogin = { showLoginDialog = true },
-                                        listState = chatListState,
-                                        modifier = Modifier.weight(1f)
-                                    )
+                                    Column(
+                                        modifier = Modifier
+                                            .width(landscapeChatWidthDp.dp)
+                                            .fillMaxHeight()
+                                            .background(twitchColors.chatBackground)
+                                    ) {
+                                        ChatHeader(
+                                            channel = currentChannel,
+                                            onOpenMultiStream = { onOpenMultiStream(currentChannel) },
+                                            onSwitchToFloating = {
+                                                updateLandscapeSideChat(false)
+                                                showFloatingChat = true
+                                            },
+                                            onClose = { updateLandscapeSideChat(false) }
+                                        )
+                                        NativeChatView(
+                                            messages = chatMessages,
+                                            emotes = chatEmotes,
+                                            structuredEmotes = chatStructuredEmotes,
+                                            currentUser = currentUser,
+                                            onSendMessage = { text -> chatViewModel.sendMessage(text, currentUser) },
+                                            onOpenLogin = { showLoginDialog = true },
+                                            listState = chatListState,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -430,13 +693,12 @@ fun CollapsiblePlayerScaffold(
                                 .statusBarsPadding()
                                 .imePadding()
                         ) {
-                            // Draggable video container centered with black background
+                            // Video container centered with black background
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(portraitVideoHeightDp.dp)
-                                    .background(Color.Black)
-                                    .then(playerDragModifier),
+                                    .background(Color.Black),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Box(
@@ -467,10 +729,11 @@ fun CollapsiblePlayerScaffold(
                                         onSelectLowLatencyBuffer = { playerViewModel.setLowLatencyBuffer(it) },
                                         onTogglePipEnabled = { playerViewModel.setPipEnabled(it) },
                                         onToggleBackgroundAudio = { playerViewModel.setBackgroundAudio(it) },
-                                        onMinimize = { playerViewModel.setMiniPlayer(true) },
+                                        onMinimize = { minimizeToMiniPlayer() },
                                         onToggleFullscreen = {
-                                            val act = context as? Activity
-                                            act?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                                            orientationManager?.requestLandscape() ?: run {
+                                                (context as? Activity)?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                                            }
                                         },
                                         isFullscreen = isFullscreen,
                                         showChatToggle = true,
@@ -483,6 +746,17 @@ fun CollapsiblePlayerScaffold(
                                                 showPortraitChat = !showPortraitChat
                                             }
                                         },
+                                        onCycleChatMode = { cyclePortraitChatMode() },
+                                        onToggleFloatingChat = {
+                                            if (showFloatingChat) {
+                                                showFloatingChat = false
+                                                showPortraitChat = true
+                                            } else {
+                                                showFloatingChat = true
+                                            }
+                                        },
+                                        onVerticalDragProgress = { handleVerticalDragProgress(it) },
+                                        onVerticalDragEnd = { vel, total -> handleVerticalDragEnd(vel, total) },
                                         adBreakActive = adBreakActive,
                                         adBreakRemainingSeconds = adBreakRemaining,
                                         isAutoMuteAds = isAutoMuteAds,
@@ -497,176 +771,199 @@ fun CollapsiblePlayerScaffold(
                                 }
                             }
 
-                            // Draggable Horizontal Splitter Handle
-                            Box(
+                            Column(
                                 modifier = Modifier
+                                    .weight(1f)
                                     .fillMaxWidth()
-                                    .height(14.dp)
-                                    .background(twitchColors.background)
-                                    .pointerInput(density) {
-                                        detectDragGestures { change, dragAmount ->
-                                            change.consume()
-                                            val deltaDp = dragAmount.y / density.density
-                                            val minH = 120f
-                                            val maxH = (configuration.screenHeightDp * 0.65f).coerceAtLeast(minH)
-                                            portraitVideoHeightDp = (portraitVideoHeightDp + deltaDp).coerceIn(minH, maxH)
-                                        }
+                                    .graphicsLayer {
+                                        val p = collapseFraction.value
+                                        alpha = (1f - p * 2.8f).coerceIn(0f, 1f)
+                                        translationY = p * with(density) { 40.dp.toPx() }
+                                        translationX = -p * with(density) { 20.dp.toPx() }
                                     }
-                                    .pointerInput(Unit) {
-                                        detectTapGestures(
-                                            onDoubleTap = {
-                                                portraitVideoHeightDp = defaultVideoHeightDp
-                                            }
-                                        )
-                                    },
-                                contentAlignment = Alignment.Center
                             ) {
-                                Box(
-                                    modifier = Modifier
-                                        .width(44.dp)
-                                        .height(4.dp)
-                                        .background(Color.White.copy(alpha = 0.35f), RoundedCornerShape(2.dp))
-                                )
-                            }
-
-                            // Streamer Info Bar (hidden while soft keyboard is visible to preserve space and keep video completely visible)
-                            val isImeVisible = WindowInsets.isImeVisible
-                            if (!isImeVisible) {
-                                StreamerDetailBar(
-                                    streamInfo = streamInfo,
-                                    channelName = currentChannel,
-                                    onOpenMultiStream = { onOpenMultiStream(currentChannel) },
-                                    onToggleFloatingChat = {
-                                        showFloatingChat = !showFloatingChat
-                                        if (showFloatingChat) {
-                                            updateLandscapeSideChat(false)
-                                        }
-                                    }
-                                )
-                            }
-
-                            // Embedded Native Chat, Floating Notice, or Hidden Chat (never blocks video)
-                            if (showFloatingChat) {
+                                // Draggable Horizontal Splitter Handle
                                 Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .weight(1f)
-                                        .background(twitchColors.background),
+                                        .height(14.dp)
+                                        .background(twitchColors.background)
+                                        .pointerInput(density) {
+                                            detectDragGestures { change, dragAmount ->
+                                                change.consume()
+                                                val deltaDp = dragAmount.y / density.density
+                                                val minH = 120f
+                                                val maxH = (configuration.screenHeightDp * 0.65f).coerceAtLeast(minH)
+                                                portraitVideoHeightDp = (portraitVideoHeightDp + deltaDp).coerceIn(minH, maxH)
+                                            }
+                                        }
+                                        .pointerInput(Unit) {
+                                            detectTapGestures(
+                                                onDoubleTap = {
+                                                    portraitVideoHeightDp = defaultVideoHeightDp
+                                                }
+                                            )
+                                        },
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    Column(
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                                        modifier = Modifier.padding(24.dp)
-                                    ) {
-                                        Icon(
-                                            Icons.Filled.PictureInPicture,
-                                            contentDescription = null,
-                                            tint = TwitchPurple,
-                                            modifier = Modifier.size(44.dp)
-                                        )
-                                        Text(
-                                            text = "Chat is floating on screen",
-                                            color = Color.White,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 15.sp
-                                        )
-                                        Text(
-                                            text = "You can drag, resize, or minimize the floating chat window",
-                                            color = TwitchTextDim,
-                                            fontSize = 12.sp,
-                                            textAlign = TextAlign.Center
-                                        )
-                                        Button(
-                                            onClick = {
-                                                showFloatingChat = false
-                                                showPortraitChat = true
-                                            },
-                                            colors = ButtonDefaults.buttonColors(containerColor = TwitchPurple),
-                                            shape = RoundedCornerShape(8.dp)
-                                        ) {
-                                            Icon(Icons.Filled.VerticalAlignBottom, contentDescription = null, modifier = Modifier.size(16.dp))
-                                            Spacer(Modifier.width(6.dp))
-                                            Text("Dock Chat Below Video", fontSize = 12.sp)
-                                        }
-                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .width(44.dp)
+                                            .height(4.dp)
+                                            .background(Color.White.copy(alpha = 0.35f), RoundedCornerShape(2.dp))
+                                    )
                                 }
-                            } else if (showPortraitChat) {
-                                NativeChatView(
-                                    messages = chatMessages,
-                                    emotes = chatEmotes,
-                                    structuredEmotes = chatStructuredEmotes,
-                                    currentUser = currentUser,
-                                    onSendMessage = { text -> chatViewModel.sendMessage(text, currentUser) },
-                                    onOpenLogin = { showLoginDialog = true },
-                                    listState = chatListState,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .weight(1f)
-                                )
-                            } else {
-                                // Chat is hidden in portrait
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .weight(1f)
-                                        .background(twitchColors.background),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Column(
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                                        modifier = Modifier.padding(24.dp)
+
+                                // Streamer Info Bar (hidden while soft keyboard is visible to preserve space and keep video completely visible)
+                                val isImeVisible = WindowInsets.isImeVisible
+                                if (!isImeVisible) {
+                                    StreamerDetailBar(
+                                        streamInfo = streamInfo,
+                                        channelName = currentChannel,
+                                        onOpenMultiStream = { onOpenMultiStream(currentChannel) },
+                                        onToggleFloatingChat = {
+                                            showFloatingChat = !showFloatingChat
+                                            if (showFloatingChat) {
+                                                updateLandscapeSideChat(false)
+                                            }
+                                        }
+                                    )
+                                }
+
+                                // Embedded Native Chat, Floating Notice, or Hidden Chat (never blocks video)
+                                if (showFloatingChat) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .weight(1f)
+                                            .background(twitchColors.background),
+                                        contentAlignment = Alignment.Center
                                     ) {
-                                        Icon(
-                                            Icons.AutoMirrored.Filled.Chat,
-                                            contentDescription = null,
-                                            tint = TwitchTextDim,
-                                            modifier = Modifier.size(40.dp)
-                                        )
-                                        Text(
-                                            text = "Chat is hidden",
-                                            color = Color.White,
-                                            fontWeight = FontWeight.SemiBold,
-                                            fontSize = 15.sp
-                                        )
-                                        Text(
-                                            text = "Double-tap video to show chat",
-                                            color = TwitchTextDim,
-                                            fontSize = 12.sp
-                                        )
-                                        Spacer(Modifier.height(4.dp))
-                                        Button(
-                                            onClick = { showPortraitChat = true },
-                                            colors = ButtonDefaults.buttonColors(containerColor = TwitchPurple),
-                                            shape = RoundedCornerShape(8.dp)
+                                        Column(
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                                            modifier = Modifier.padding(24.dp)
                                         ) {
-                                            Text("Show Chat", fontSize = 12.sp)
+                                            Icon(
+                                                Icons.Filled.PictureInPicture,
+                                                contentDescription = null,
+                                                tint = TwitchPurple,
+                                                modifier = Modifier.size(44.dp)
+                                            )
+                                            Text(
+                                                text = "Chat is floating on screen",
+                                                color = Color.White,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 15.sp
+                                            )
+                                            Text(
+                                                text = "You can drag, resize, or minimize the floating chat window",
+                                                color = TwitchTextDim,
+                                                fontSize = 12.sp,
+                                                textAlign = TextAlign.Center
+                                            )
+                                            Button(
+                                                onClick = {
+                                                    showFloatingChat = false
+                                                    showPortraitChat = true
+                                                },
+                                                colors = ButtonDefaults.buttonColors(containerColor = TwitchPurple),
+                                                shape = RoundedCornerShape(8.dp)
+                                            ) {
+                                                Icon(Icons.Filled.VerticalAlignBottom, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                Spacer(Modifier.width(6.dp))
+                                                Text("Dock Chat Below Video", fontSize = 12.sp)
+                                            }
+                                        }
+                                    }
+                                } else if (showPortraitChat) {
+                                    NativeChatView(
+                                        messages = chatMessages,
+                                        emotes = chatEmotes,
+                                        structuredEmotes = chatStructuredEmotes,
+                                        currentUser = currentUser,
+                                        onSendMessage = { text -> chatViewModel.sendMessage(text, currentUser) },
+                                        onOpenLogin = { showLoginDialog = true },
+                                        listState = chatListState,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .weight(1f)
+                                    )
+                                } else {
+                                    // Chat is hidden in portrait
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .weight(1f)
+                                            .background(twitchColors.background),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Column(
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                                            modifier = Modifier.padding(24.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.AutoMirrored.Filled.Chat,
+                                                contentDescription = null,
+                                                tint = TwitchTextDim,
+                                                modifier = Modifier.size(40.dp)
+                                            )
+                                            Text(
+                                                text = "Chat is hidden",
+                                                color = Color.White,
+                                                fontWeight = FontWeight.SemiBold,
+                                                fontSize = 15.sp
+                                            )
+                                            Text(
+                                                text = "Double-tap video to show chat",
+                                                color = TwitchTextDim,
+                                                fontSize = 12.sp
+                                            )
+                                            Spacer(Modifier.height(4.dp))
+                                            Button(
+                                                onClick = { showPortraitChat = true },
+                                                colors = ButtonDefaults.buttonColors(containerColor = TwitchPurple),
+                                                shape = RoundedCornerShape(8.dp)
+                                            ) {
+                                                Text("Show Chat", fontSize = 12.sp)
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
                     }
+                }
 
-                    // Optional Floating Resizable Chat Overlay
-                    if (showFloatingChat) {
-                        FloatingResizableChat(
-                            channelName = currentChannel,
-                            availableChannels = listOf(currentChannel),
-                            onDock = {
-                                showFloatingChat = false
-                                if (isLandscape) updateLandscapeSideChat(true)
-                            },
-                            onClose = { showFloatingChat = false },
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    }
+                // Optional Floating Resizable Chat Overlay
+                if (showFloatingChat) {
+                    FloatingResizableChat(
+                        channelName = currentChannel,
+                        availableChannels = listOf(currentChannel),
+                        messages = chatMessages,
+                        emotes = chatEmotes,
+                        structuredEmotes = chatStructuredEmotes,
+                        currentUser = currentUser,
+                        onSendMessage = { text -> chatViewModel.sendMessage(text, currentUser) },
+                        onDock = {
+                            showFloatingChat = false
+                            if (isLandscape) updateLandscapeSideChat(true) else showPortraitChat = true
+                        },
+                        onClose = { showFloatingChat = false },
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                alpha = (1f - collapseFraction.value * 2.8f).coerceIn(0f, 1f)
+                            }
+                    )
                 }
             }
         }
     }
 }
+
+
 
 @Composable
 private fun StreamerDetailBar(

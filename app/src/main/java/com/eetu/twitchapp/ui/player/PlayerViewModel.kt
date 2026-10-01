@@ -28,8 +28,11 @@ import java.io.ByteArrayOutputStream
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
@@ -322,6 +325,15 @@ class PlayerViewModel(
 
     private val _isMiniPlayer = MutableStateFlow(false)
     val isMiniPlayer: StateFlow<Boolean> = _isMiniPlayer.asStateFlow()
+
+    private val _expandPlayerEvent = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val expandPlayerEvent: SharedFlow<Unit> = _expandPlayerEvent.asSharedFlow()
+
+    fun expandPlayer() {
+        if (_isMiniPlayer.value) {
+            _expandPlayerEvent.tryEmit(Unit)
+        }
+    }
 
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
@@ -636,11 +648,20 @@ class PlayerViewModel(
     }
 
     fun playChannel(channelName: String, forceReload: Boolean = false) {
-        val clean = channelName.trim().lowercase()
+        val clean = channelName.trim().lowercase().removePrefix("@")
         if (clean.isEmpty()) return
 
-        if (!forceReload && _currentChannel.value == clean && exoPlayer.playbackState != Player.STATE_IDLE) {
-            _isMiniPlayer.value = false
+        val currentClean = _currentChannel.value.trim().lowercase().removePrefix("@")
+        if (!forceReload && currentClean == clean && currentClean.isNotEmpty()) {
+            if (_isMiniPlayer.value) {
+                _expandPlayerEvent.tryEmit(Unit)
+            }
+            if (!exoPlayer.isPlaying && exoPlayer.playbackState != Player.STATE_IDLE) {
+                exoPlayer.play()
+            } else if (exoPlayer.playbackState == Player.STATE_IDLE && exoPlayer.mediaItemCount > 0) {
+                exoPlayer.prepare()
+                exoPlayer.play()
+            }
             return
         }
 

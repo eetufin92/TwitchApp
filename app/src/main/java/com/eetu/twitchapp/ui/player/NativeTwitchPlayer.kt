@@ -46,6 +46,7 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -96,6 +97,12 @@ fun NativeTwitchPlayer(
     showChatToggle: Boolean = false,
     isChatVisible: Boolean = true,
     onToggleChat: () -> Unit = {},
+    onCycleChatMode: (() -> String)? = null,
+    onToggleFloatingChat: (() -> Unit)? = null,
+    onVerticalDragProgress: ((dragAmountY: Float) -> Unit)? = null,
+    onVerticalDragEnd: ((velocity: Float, totalDragY: Float) -> Unit)? = null,
+    isMiniPlayer: Boolean = false,
+    onExpand: (() -> Unit)? = null,
     adBreakActive: Boolean = false,
     adBreakRemainingSeconds: Int = 0,
     isAutoMuteAds: Boolean = true,
@@ -176,6 +183,15 @@ fun NativeTwitchPlayer(
         }
     }
 
+    // Reset zoom when miniplayer becomes active
+    LaunchedEffect(isMiniPlayer) {
+        if (isMiniPlayer && scaleAnim.value > 1.05f) {
+            scaleAnim.snapTo(1f)
+            offsetXAnim.snapTo(0f)
+            offsetYAnim.snapTo(0f)
+        }
+    }
+
     // Keep screen on while video/audio is playing to prevent display sleep
     DisposableEffect(exoPlayer.isPlaying) {
         val window = activity?.window
@@ -205,7 +221,8 @@ fun NativeTwitchPlayer(
             .clipToBounds()
             .onSizeChanged { containerSize = it }
             .pointerInput(Unit) {
-                detectTwoFingerZoomAndPan(
+                if (!isMiniPlayer) {
+                    detectTwoFingerZoomAndPan(
                     onGesture = { centroid, pan, zoom ->
                         if (containerSize.width > 0 && containerSize.height > 0) {
                             val oldScale = scaleAnim.value
@@ -264,57 +281,76 @@ fun NativeTwitchPlayer(
                         }
                     }
                 )
+                }
             }
             .pointerInput(isLandscape) {
                 var totalDragY = 0f
                 var totalDragX = 0f
                 var isDragging = false
+                var velocityTracker = VelocityTracker()
                 detectDragGestures(
                     onDragStart = {
                         totalDragY = 0f
                         totalDragX = 0f
                         isDragging = false
+                        velocityTracker = VelocityTracker()
                     },
                     onDrag = { change, dragAmount ->
+                        velocityTracker.addPosition(change.uptimeMillis, change.position)
                         totalDragY += dragAmount.y
                         totalDragX += dragAmount.x
-                        if (kotlin.math.abs(totalDragY) > 20f || kotlin.math.abs(totalDragX) > 20f) {
-                            isDragging = true
+                        if (!isDragging) {
+                            if (kotlin.math.abs(totalDragY) > 12f || kotlin.math.abs(totalDragX) > 12f) {
+                                if (kotlin.math.abs(totalDragY) > kotlin.math.abs(totalDragX)) {
+                                    isDragging = true
+                                    showControls = false
+                                    change.consume()
+                                    onVerticalDragProgress?.invoke(totalDragY)
+                                }
+                            }
+                        } else {
                             change.consume()
+                            onVerticalDragProgress?.invoke(dragAmount.y)
                         }
                     },
                     onDragEnd = {
-                        if (isDragging) {
-                            val threshold = 40.dp.toPx()
-                            if (kotlin.math.abs(totalDragY) > kotlin.math.abs(totalDragX)) {
-                                if (!isLandscape && totalDragY < -threshold) {
-                                    onToggleFullscreen()
-                                } else if (!isLandscape && totalDragY > threshold) {
+                        if (isDragging && kotlin.math.abs(totalDragY) > kotlin.math.abs(totalDragX)) {
+                            val yVelocity = velocityTracker.calculateVelocity().y
+                            if (totalDragY < -70.dp.toPx() && !isLandscape) {
+                                onToggleFullscreen()
+                            } else if (onVerticalDragEnd != null) {
+                                onVerticalDragEnd(yVelocity, totalDragY)
+                            } else {
+                                val threshold = 120.dp.toPx()
+                                if (totalDragY > threshold || yVelocity > 1800f) {
                                     onMinimize()
-                                } else if (isLandscape && totalDragY > threshold) {
-                                    onToggleFullscreen()
                                 }
                             }
+                        }
+                    },
+                    onDragCancel = {
+                        if (isDragging) {
+                            onVerticalDragEnd?.invoke(0f, 0f)
                         }
                     }
                 )
             }
             .pointerInput(Unit) {
                 detectTapGestures(
-                    onTap = { showControls = !showControls },
+                    onTap = {
+                        showControls = !showControls
+                    },
                     onDoubleTap = {
-                        if (scaleAnim.value > 1.05f) {
-                            coroutineScope.launch {
-                                launch { scaleAnim.animateTo(1f, tween(250, easing = FastOutSlowInEasing)) }
-                                launch { offsetXAnim.animateTo(0f, tween(250, easing = FastOutSlowInEasing)) }
-                                launch { offsetYAnim.animateTo(0f, tween(250, easing = FastOutSlowInEasing)) }
-                            }
+                        val feedback = onCycleChatMode?.invoke()
+                        if (feedback != null) {
                             chatFeedbackJob?.cancel()
-                            chatFeedbackText = "Zoom reset (1.0x)"
+                            chatFeedbackText = feedback
                             chatFeedbackJob = coroutineScope.launch {
-                                delay(1000)
+                                delay(1100)
                                 chatFeedbackText = null
                             }
+                        } else if (onToggleFloatingChat != null) {
+                            onToggleFloatingChat()
                         } else {
                             triggerChatToggle()
                         }
@@ -334,13 +370,13 @@ fun NativeTwitchPlayer(
                             ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.MATCH_PARENT
                         )
-                        this.resizeMode = resizeMode
+                        this.resizeMode = if (isMiniPlayer) AspectRatioFrameLayout.RESIZE_MODE_ZOOM else resizeMode
                         setBackgroundColor(android.graphics.Color.BLACK)
                     }
                 },
                 update = { playerView ->
                     playerView.player = exoPlayer
-                    playerView.resizeMode = resizeMode
+                    playerView.resizeMode = if (isMiniPlayer) AspectRatioFrameLayout.RESIZE_MODE_ZOOM else resizeMode
                     playerView.keepScreenOn = true
                 },
                 modifier = Modifier
@@ -715,7 +751,7 @@ fun NativeTwitchPlayer(
 
         // Overlay Controls (Fade In / Out)
         AnimatedVisibility(
-            visible = showControls,
+            visible = showControls && !isMiniPlayer,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.fillMaxSize()
