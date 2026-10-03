@@ -109,4 +109,12 @@ class TwitchSettingsManager(context: Context) {
 
     fun isFloatingChatBgEnabled(): Boolean = prefs.getBoolean(KEY_FLOATING_CHAT_BG_ENABLED, false)
     fun setFloatingChatBgEnabled(enabled: Boolean) = prefs.edit().putBoolean(KEY_FLOATING_CHAT_BG_ENABLED, enabled).apply()
+
+    fun registerListener(listener: SharedPreferences.OnSharedPreferenceChangeListener) {
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+    }
+
+    fun unregisterListener(listener: SharedPreferences.OnSharedPreferenceChangeListener) {
+        prefs.unregisterOnSharedPreferenceChangeListener(listener)
+    }
 }

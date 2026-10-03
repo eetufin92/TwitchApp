@@ -1,6 +1,7 @@
 package com.eetu.twitchapp.ui.player
 
 import android.app.Application
+import android.content.SharedPreferences
 import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
@@ -38,15 +39,17 @@ import kotlinx.coroutines.launch
 
 class TwitchAdDetectingDataSourceFactory(
     private val upstreamFactory: DataSource.Factory,
+    private val bufferMsProvider: () -> Long = { 4500L },
     private val onAdDetected: (Boolean, String, Int) -> Unit
 ) : DataSource.Factory {
     override fun createDataSource(): DataSource {
-        return TwitchAdDetectingDataSource(upstreamFactory.createDataSource(), onAdDetected)
+        return TwitchAdDetectingDataSource(upstreamFactory.createDataSource(), bufferMsProvider, onAdDetected)
     }
 }
 
 class TwitchAdDetectingDataSource(
     private val upstream: DataSource,
+    private val bufferMsProvider: () -> Long = { 4500L },
     private val onAdDetected: (Boolean, String, Int) -> Unit
 ) : DataSource {
     private var isPlaylist = false
@@ -57,8 +60,8 @@ class TwitchAdDetectingDataSource(
     }
 
     override fun open(dataSpec: DataSpec): Long {
-        val path = dataSpec.uri.path ?: ""
-        isPlaylist = path.endsWith(".m3u8") || path.contains("m3u8")
+        val uriStr = dataSpec.uri.toString()
+        isPlaylist = uriStr.contains(".m3u8") || uriStr.contains("playlist")
         if (isPlaylist) {
             playlistBuffer.reset()
         }
@@ -81,76 +84,15 @@ class TwitchAdDetectingDataSource(
         if (isPlaylist && playlistBuffer.size() > 0) {
             try {
                 val content = playlistBuffer.toString("UTF-8")
-                parsePlaylistForAds(content)
+                val bufferMs = bufferMsProvider()
+                val result = TwitchAdParser.parse(content, bufferMs)
+                Log.i("PlayerViewModel", "Ad detection: isAdActive=${result.isAdActive}, adId=${result.adId}, dur=${result.durationSeconds}, hasAdSeg=${result.hasAdSegment}, bufferMs=$bufferMs")
+                onAdDetected(result.isAdActive, result.adId, result.durationSeconds)
             } catch (e: Exception) {
-                // Ignore parse errors
+                Log.e("PlayerViewModel", "Error parsing playlist for ads", e)
             }
         }
         upstream.close()
-    }
-
-    private fun parsePlaylistForAds(content: String) {
-        val hasAnyAdTag = content.contains("stitched-ad") ||
-                content.contains("twitch-stitched-ad") ||
-                content.contains("EXT-X-TWITCH-PREVIEW-AD")
-
-        if (!hasAnyAdTag) {
-            onAdDetected(false, "", 0)
-            return
-        }
-
-        var adId = ""
-        var duration = 30
-        val idMatch = Regex("""ID="([^"]+)"""").find(content)
-        if (idMatch != null) {
-            adId = idMatch.groupValues[1]
-        } else {
-            val segMatch = Regex("""stitched-ad-([a-zA-Z0-9_-]+)""").find(content)
-            if (segMatch != null) {
-                adId = segMatch.groupValues[0]
-            }
-        }
-        val match = Regex("""(?:PLANNED-)?DURATION=([0-9.]+)""").find(content)
-        if (match != null) {
-            duration = match.groupValues[1].toDoubleOrNull()?.roundToInt() ?: 30
-        }
-
-        // Check START-DATE and END-DATE timestamps in #EXT-X-DATERANGE:
-        var isExpired = false
-        val startDateStr = Regex("""START-DATE="([^"]+)"""").find(content)?.groupValues?.get(1)
-        val endDateStr = Regex("""END-DATE="([^"]+)"""").find(content)?.groupValues?.get(1)
-
-        if (!startDateStr.isNullOrEmpty()) {
-            try {
-                val startMs = java.time.Instant.parse(startDateStr).toEpochMilli()
-                val endMs = if (!endDateStr.isNullOrEmpty()) {
-                    try {
-                        java.time.Instant.parse(endDateStr).toEpochMilli()
-                    } catch (e: Exception) {
-                        startMs + (duration * 1000L)
-                    }
-                } else {
-                    startMs + (duration * 1000L)
-                }
-
-                val now = System.currentTimeMillis()
-                // If now is past endMs + 4000ms (buffer delay margin), this ad has already finished airing
-                if (now > endMs + 4000L) {
-                    isExpired = true
-                } else {
-                    val remainingSec = ((endMs - now) / 1000L).toInt()
-                    if (remainingSec in 1..duration) {
-                        duration = remainingSec
-                    }
-                }
-            } catch (e: Exception) {
-                // Ignore parse errors and fall back to active duration
-            }
-        }
-
-        val isAdActive = !isExpired
-        Log.d("PlayerViewModel", "Ad detection: hasTag=$hasAnyAdTag, adId=$adId, dur=$duration, isAdActive=$isAdActive (expired=$isExpired)")
-        onAdDetected(isAdActive, adId, duration)
     }
 }
 
@@ -217,12 +159,49 @@ class PlayerViewModel(
     private val _isShowAdOverlay = MutableStateFlow(settingsManager.isShowAdOverlay())
     val isShowAdOverlay: StateFlow<Boolean> = _isShowAdOverlay.asStateFlow()
 
+    private val prefChangeListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        when (key) {
+            TwitchSettingsManager.KEY_SHOW_AD_OVERLAY -> {
+                _isShowAdOverlay.value = settingsManager.isShowAdOverlay()
+            }
+            TwitchSettingsManager.KEY_AUTO_MUTE_ADS -> {
+                _isAutoMuteAds.value = settingsManager.isAutoMuteAds()
+            }
+            TwitchSettingsManager.KEY_AUTO_360P_ADS -> {
+                _isAuto360pAds.value = settingsManager.isAuto360pAds()
+            }
+            TwitchSettingsManager.KEY_LOW_LATENCY_BUFFER_MS -> {
+                _lowLatencyBufferMs.value = settingsManager.getLowLatencyBufferMs()
+            }
+            TwitchSettingsManager.KEY_PREFERRED_QUALITY -> {
+                _selectedQuality.value = settingsManager.getPreferredQuality()
+            }
+            TwitchSettingsManager.KEY_AUDIO_ONLY -> {
+                _isAudioOnly.value = settingsManager.isAudioOnly()
+            }
+            TwitchSettingsManager.KEY_LOW_LATENCY -> {
+                _isLowLatency.value = settingsManager.isLowLatency()
+            }
+            TwitchSettingsManager.KEY_PIP_ENABLED -> {
+                _isPipEnabled.value = settingsManager.isPipEnabled()
+            }
+            TwitchSettingsManager.KEY_BACKGROUND_AUDIO -> {
+                _backgroundAudioEnabled.value = settingsManager.isBackgroundAudio()
+            }
+        }
+    }
+
+    init {
+        settingsManager.registerListener(prefChangeListener)
+    }
+
     private var adCountdownJob: Job? = null
     private var currentAdId: String = ""
     private var previousVolume: Float = 1.0f
     private var preAdQuality: String? = null
     private var stallRecoveryJob: Job? = null
     private var consecutiveCleanPlaylists = 0
+    private var cleanStreamStartTime = 0L
     private var lastAdEndedTimestamp = 0L
     private var adBreakStartTime = 0L
     private val completedAdIds = LinkedHashSet<String>()
@@ -281,6 +260,10 @@ class PlayerViewModel(
 
                     override fun onTracksChanged(tracks: Tracks) {
                         extractVideoQualities(tracks)
+                    }
+
+                    override fun onEvents(player: Player, events: Player.Events) {
+                        updateBufferDuration()
                     }
 
                     override fun onPlayerError(error: PlaybackException) {
@@ -528,16 +511,58 @@ class PlayerViewModel(
             .build()
     }
 
+    @Volatile
+    private var cachedBufferDurationMs: Long = 4500L
+
+    private fun updateBufferDuration() {
+        try {
+            val liveOffset = exoPlayer.currentLiveOffset
+            if (liveOffset != C.TIME_UNSET && liveOffset > 0L) {
+                cachedBufferDurationMs = liveOffset.coerceIn(1000L, 15000L)
+                return
+            }
+            val buffered = exoPlayer.totalBufferedDuration
+            if (buffered > 0L) {
+                cachedBufferDurationMs = buffered.coerceIn(1000L, 15000L)
+                return
+            }
+        } catch (e: Exception) {
+            // Ignore thread or state exceptions
+        }
+        val targetMs = if (_isLowLatency.value) {
+            _lowLatencyBufferMs.value.toLong()
+        } else {
+            8000L
+        }
+        cachedBufferDurationMs = targetMs.coerceIn(1000L, 15000L)
+    }
+
+    fun getBufferDurationMs(): Long {
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            updateBufferDuration()
+        }
+        return cachedBufferDurationMs
+    }
+
+    fun getBufferSeconds(): Int {
+        val ms = getBufferDurationMs()
+        return kotlin.math.max(1, kotlin.math.ceil(ms / 1000.0).toInt())
+    }
+
     private fun handleAdDetection(hasAd: Boolean, adId: String, durationSeconds: Int) {
         viewModelScope.launch {
             val now = System.currentTimeMillis()
+            Log.i(TAG, "handleAdDetection: hasAd=$hasAd, adId=$adId, dur=$durationSeconds, active=${_adBreakActive.value}")
             if (hasAd) {
                 consecutiveCleanPlaylists = 0
+                cleanStreamStartTime = 0L
 
                 // If this ad has already finished playing recently, ignore it!
                 if (adId.isNotEmpty() && completedAdIds.contains(adId)) {
                     return@launch
                 }
+
+                val bufferSec = getBufferSeconds()
 
                 // If ad break is already active:
                 if (_adBreakActive.value) {
@@ -553,7 +578,7 @@ class PlayerViewModel(
                         Log.d(TAG, "New ad in pod detected: $currentAdId -> $adId")
                         completedAdIds.add(currentAdId)
                         currentAdId = adId
-                        val dur = if (durationSeconds in 5..120) durationSeconds else 30
+                        val dur = if (durationSeconds in 5..150) durationSeconds else (30 + bufferSec)
                         _adBreakDuration.value = dur
                         _adBreakRemaining.value = dur
                         startCountdown(dur)
@@ -571,7 +596,7 @@ class PlayerViewModel(
                 _adBreakActive.value = true
                 adBreakStartTime = now
                 currentAdId = adId
-                val dur = if (durationSeconds in 5..120) durationSeconds else 30
+                val dur = if (durationSeconds in 5..150) durationSeconds else (30 + bufferSec)
                 _adBreakDuration.value = dur
                 _adBreakRemaining.value = dur
 
@@ -591,8 +616,26 @@ class PlayerViewModel(
                 // hasAd is false (ad is no longer at live edge)
                 if (_adBreakActive.value) {
                     consecutiveCleanPlaylists++
-                    // If live segments are playing without ads for 2 playlists (~3s), end ad break immediately!
-                    if (consecutiveCleanPlaylists >= 2) {
+                    val bufferMs = getBufferDurationMs()
+                    val bufferSec = getBufferSeconds()
+
+                    if (cleanStreamStartTime == 0L) {
+                        cleanStreamStartTime = now
+                        // First clean playlist detected:
+                        // Ensure countdown covers buffered ad frames still in ExoPlayer
+                        if (_adBreakRemaining.value <= 0 || _adBreakRemaining.value > bufferSec) {
+                            _adBreakRemaining.value = bufferSec
+                            _adBreakDuration.value = maxOf(_adBreakDuration.value, bufferSec)
+                            startCountdown(bufferSec)
+                        }
+                    }
+
+                    val timeSinceClean = now - cleanStreamStartTime
+
+                    // End ad break when buffer has drained and countdown has finished
+                    // Or safety: clean stream for bufferMs + 3s with at least 2 clean playlists
+                    if ((timeSinceClean >= bufferMs && consecutiveCleanPlaylists >= 2 && _adBreakRemaining.value <= 0) ||
+                        (timeSinceClean >= bufferMs + 3000L && consecutiveCleanPlaylists >= 2)) {
                         endAdBreak()
                     }
                 }
@@ -601,6 +644,7 @@ class PlayerViewModel(
     }
 
     private fun startCountdown(dur: Int) {
+        Log.i(TAG, "startCountdown: dur=$dur")
         adCountdownJob?.cancel()
         adCountdownJob = viewModelScope.launch {
             var remaining = dur
@@ -616,8 +660,10 @@ class PlayerViewModel(
 
     private fun endAdBreak() {
         if (_adBreakActive.value) {
+            Log.i(TAG, "endAdBreak: ending active ad break (currentAdId=$currentAdId)")
             _adBreakActive.value = false
             _adBreakRemaining.value = 0
+            cleanStreamStartTime = 0L
             if (currentAdId.isNotEmpty()) {
                 completedAdIds.add(currentAdId)
                 if (completedAdIds.size > 50) {
@@ -650,6 +696,7 @@ class PlayerViewModel(
     fun playChannel(channelName: String, forceReload: Boolean = false) {
         val clean = channelName.trim().lowercase().removePrefix("@")
         if (clean.isEmpty()) return
+        Log.i(TAG, "playChannel called for: $clean (forceReload=$forceReload, current=${_currentChannel.value})")
 
         val currentClean = _currentChannel.value.trim().lowercase().removePrefix("@")
         if (!forceReload && currentClean == clean && currentClean.isNotEmpty()) {
@@ -697,7 +744,10 @@ class PlayerViewModel(
                     .setConnectTimeoutMs(8000)
                     .setReadTimeoutMs(8000)
 
-                val dataSourceFactory = TwitchAdDetectingDataSourceFactory(httpFactory) { hasAd, adId, dur ->
+                val dataSourceFactory = TwitchAdDetectingDataSourceFactory(
+                    upstreamFactory = httpFactory,
+                    bufferMsProvider = { getBufferDurationMs() }
+                ) { hasAd, adId, dur ->
                     handleAdDetection(hasAd, adId, dur)
                 }
 
@@ -778,6 +828,7 @@ class PlayerViewModel(
 
     override fun onCleared() {
         super.onCleared()
+        settingsManager.unregisterListener(prefChangeListener)
         cancelStallRecovery()
         endAdBreak()
         exoPlayer.release()
