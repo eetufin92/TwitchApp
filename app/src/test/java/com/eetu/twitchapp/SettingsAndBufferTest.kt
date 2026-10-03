@@ -237,4 +237,104 @@ class SettingsAndBufferTest {
         // 30s default + 5s buffer = 35s
         assertEquals(35, result.durationSeconds)
     }
+
+    @Test
+    fun testMultiStreamEffectiveVolume_AutoMuteEnabled() {
+        val volume = 0.8f
+        val isMuted = false
+        val isAutoMuteAds = true
+
+        // Normal playback
+        var adBreakActive = false
+        var isAdMuted = isAutoMuteAds && adBreakActive
+        var effectiveVolume = if (isMuted || isAdMuted) 0f else volume.coerceIn(0f, 1f)
+        assertEquals(0.8f, effectiveVolume, 0.001f)
+        assertEquals(false, isAdMuted)
+
+        // Ad starts
+        adBreakActive = true
+        isAdMuted = isAutoMuteAds && adBreakActive
+        effectiveVolume = if (isMuted || isAdMuted) 0f else volume.coerceIn(0f, 1f)
+        assertEquals(0.0f, effectiveVolume, 0.001f)
+        assertEquals(true, isAdMuted)
+
+        // Ad finishes
+        adBreakActive = false
+        isAdMuted = isAutoMuteAds && adBreakActive
+        effectiveVolume = if (isMuted || isAdMuted) 0f else volume.coerceIn(0f, 1f)
+        assertEquals(0.8f, effectiveVolume, 0.001f)
+        assertEquals(false, isAdMuted)
+    }
+
+    @Test
+    fun testMultiStreamEffectiveVolume_UserAlreadyMuted() {
+        val volume = 0.8f
+        val isMuted = true
+        val isAutoMuteAds = true
+
+        // User had stream manually muted
+        var adBreakActive = false
+        var isAdMuted = isAutoMuteAds && adBreakActive
+        var effectiveVolume = if (isMuted || isAdMuted) 0f else volume.coerceIn(0f, 1f)
+        assertEquals(0.0f, effectiveVolume, 0.001f)
+
+        // Ad starts
+        adBreakActive = true
+        isAdMuted = isAutoMuteAds && adBreakActive
+        effectiveVolume = if (isMuted || isAdMuted) 0f else volume.coerceIn(0f, 1f)
+        assertEquals(0.0f, effectiveVolume, 0.001f)
+
+        // Ad finishes -> still muted by user preference
+        adBreakActive = false
+        isAdMuted = isAutoMuteAds && adBreakActive
+        effectiveVolume = if (isMuted || isAdMuted) 0f else volume.coerceIn(0f, 1f)
+        assertEquals(0.0f, effectiveVolume, 0.001f)
+    }
+
+    @Test
+    fun testMultiStreamEffectiveVolume_AutoMuteDisabled() {
+        val volume = 0.8f
+        val isMuted = false
+        val isAutoMuteAds = false // User disabled auto mute
+
+        val adBreakActive = true
+        val isAdMuted = isAutoMuteAds && adBreakActive
+        val effectiveVolume = if (isMuted || isAdMuted) 0f else volume.coerceIn(0f, 1f)
+        assertEquals(0.8f, effectiveVolume, 0.001f)
+        assertEquals(false, isAdMuted)
+    }
+
+    @Test
+    fun testMultiStreamIndependentAdStates() {
+        // Stream A (focused, unmuted)
+        val volA = 1.0f
+        val isMutedA = false
+        var adActiveA = false
+
+        // Stream B (unfocused, muted by user)
+        val volB = 0.5f
+        val isMutedB = true
+        var adActiveB = false
+
+        val autoMute = true
+
+        // Stream A enters ad break
+        adActiveA = true
+        val effA_duringAd = if (isMutedA || (autoMute && adActiveA)) 0f else volA
+        val effB_duringAd = if (isMutedB || (autoMute && adActiveB)) 0f else volB
+
+        assertEquals(0.0f, effA_duringAd, 0.001f)
+        assertEquals(0.0f, effB_duringAd, 0.001f)
+
+        // User switches audio focus to Stream B during Stream A's ad
+        val isMutedB_switched = false
+        val effB_switched = if (isMutedB_switched || (autoMute && adActiveB)) 0f else volB
+        assertEquals(0.5f, effB_switched, 0.001f) // Stream B plays audio!
+        assertEquals(0.0f, if (isMutedA || (autoMute && adActiveA)) 0f else volA, 0.001f) // Stream A stays muted!
+
+        // Stream A ad ends
+        adActiveA = false
+        val effA_restored = if (isMutedA || (autoMute && adActiveA)) 0f else volA
+        assertEquals(1.0f, effA_restored, 0.001f)
+    }
 }

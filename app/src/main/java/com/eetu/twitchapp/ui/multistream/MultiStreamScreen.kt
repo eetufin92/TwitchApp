@@ -47,7 +47,9 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import androidx.compose.ui.layout.ContentScale
@@ -58,9 +60,15 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.eetu.twitchapp.data.model.LiveStreamItem
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import com.eetu.twitchapp.data.TwitchSettingsManager
 import com.eetu.twitchapp.data.auth.TwitchAuthManager
 import com.eetu.twitchapp.data.network.TwitchGqlClient
 import com.eetu.twitchapp.ui.components.FloatingResizableChat
+import com.eetu.twitchapp.ui.player.TwitchAdDetectingDataSourceFactory
+import android.content.SharedPreferences
+import java.util.concurrent.atomic.AtomicLong
 import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.saveable.rememberSaveable
 import com.eetu.twitchapp.ui.theme.*
@@ -70,6 +78,8 @@ fun MultiStreamScreen(
     initialChannels: List<String> = emptyList(),
     existingPlayer: ExoPlayer? = null,
     existingChannel: String? = null,
+    existingAdActive: Boolean = false,
+    existingAdRemaining: Int = 0,
     onReturnToSingleStream: (String) -> Unit = {},
     onCloseAll: () -> Unit = {},
     onNavigateBack: () -> Unit
@@ -269,6 +279,8 @@ fun MultiStreamScreen(
                             channel = channel,
                             existingPlayer = existingPlayer,
                             existingChannel = existingChannel,
+                            existingAdActive = if (channel.equals(existingChannel, ignoreCase = true)) existingAdActive else false,
+                            existingAdRemaining = if (channel.equals(existingChannel, ignoreCase = true)) existingAdRemaining else 0,
                             volume = streamVolumes[channel] ?: 1.0f,
                             onVolumeChange = { streamVolumes[channel] = it },
                             isMuted = streamMuted[channel] ?: false,
@@ -744,6 +756,8 @@ fun StreamTile(
     onClose: () -> Unit,
     existingPlayer: ExoPlayer? = null,
     existingChannel: String? = null,
+    existingAdActive: Boolean = false,
+    existingAdRemaining: Int = 0,
     isDragging: Boolean = false,
     isHoveredTarget: Boolean = false,
     hoveredSwapWith: String? = null,
@@ -761,11 +775,137 @@ fun StreamTile(
     val context = LocalContext.current
     val gqlClient = remember { TwitchGqlClient() }
     val authManager = remember { TwitchAuthManager.getInstance(context) }
+    val settingsManager = remember { TwitchSettingsManager(context) }
+
+    var isAutoMuteAds by remember { mutableStateOf(settingsManager.isAutoMuteAds()) }
+    var isShowAdOverlay by remember { mutableStateOf(settingsManager.isShowAdOverlay()) }
+    var isLowLatency by remember { mutableStateOf(settingsManager.isLowLatency()) }
+    var lowLatencyBufferMs by remember { mutableStateOf(settingsManager.getLowLatencyBufferMs()) }
+
+    DisposableEffect(settingsManager) {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            when (key) {
+                "auto_mute_ads" -> isAutoMuteAds = settingsManager.isAutoMuteAds()
+                "show_ad_overlay" -> isShowAdOverlay = settingsManager.isShowAdOverlay()
+                "low_latency" -> isLowLatency = settingsManager.isLowLatency()
+                "low_latency_buffer_ms" -> lowLatencyBufferMs = settingsManager.getLowLatencyBufferMs()
+            }
+        }
+        settingsManager.registerListener(listener)
+        onDispose {
+            settingsManager.unregisterListener(listener)
+        }
+    }
+
     val isExistingStream = existingPlayer != null && channel.equals(existingChannel, ignoreCase = true)
     var isLoading by remember { mutableStateOf(!isExistingStream) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var playerViewRef by remember { mutableStateOf<PlayerView?>(null) }
     var showVolumeSlider by remember { mutableStateOf(false) }
+
+    // Per-stream ad state
+    var localAdActive by remember(channel) { mutableStateOf(false) }
+    var localAdRemaining by remember(channel) { mutableStateOf(0) }
+    var localAdDuration by remember(channel) { mutableStateOf(0) }
+    var currentAdId by remember(channel) { mutableStateOf("") }
+    val completedAdIds = remember(channel) { LinkedHashSet<String>() }
+    var consecutiveCleanPlaylists by remember(channel) { mutableStateOf(0) }
+    var cleanStreamStartTime by remember(channel) { mutableStateOf(0L) }
+    val coroutineScope = rememberCoroutineScope()
+    var adCountdownJob by remember(channel) { mutableStateOf<Job?>(null) }
+
+    val adBreakActive = if (isExistingStream) existingAdActive else localAdActive
+    val adBreakRemaining = if (isExistingStream) existingAdRemaining else localAdRemaining
+
+    val cachedBufferDurationMs = remember(channel) {
+        AtomicLong(if (isLowLatency) lowLatencyBufferMs.toLong() else 4500L)
+    }
+
+    fun endLocalAdBreak() {
+        if (localAdActive) {
+            localAdActive = false
+            localAdRemaining = 0
+            cleanStreamStartTime = 0L
+            if (currentAdId.isNotEmpty()) {
+                completedAdIds.add(currentAdId)
+                if (completedAdIds.size > 50) {
+                    val oldest = completedAdIds.first()
+                    completedAdIds.remove(oldest)
+                }
+            }
+            currentAdId = ""
+            adCountdownJob?.cancel()
+            adCountdownJob = null
+        }
+    }
+
+    fun startLocalCountdown(dur: Int) {
+        adCountdownJob?.cancel()
+        adCountdownJob = coroutineScope.launch {
+            var remaining = dur
+            while (remaining > 0 && localAdActive) {
+                localAdRemaining = remaining
+                delay(1000)
+                remaining--
+            }
+            if (localAdActive) {
+                localAdRemaining = 0
+            }
+        }
+    }
+
+    fun handleLocalAdDetection(hasAd: Boolean, adId: String, durationSeconds: Int) {
+        coroutineScope.launch {
+            val now = System.currentTimeMillis()
+            val bufferMs = cachedBufferDurationMs.get()
+            val bufferSec = maxOf(1, kotlin.math.ceil(bufferMs / 1000.0).toInt())
+
+            if (hasAd) {
+                consecutiveCleanPlaylists = 0
+                cleanStreamStartTime = 0L
+
+                if (adId.isNotEmpty() && completedAdIds.contains(adId)) {
+                    return@launch
+                }
+
+                if (localAdActive) {
+                    if (adId.isNotEmpty() && adId != currentAdId) {
+                        completedAdIds.add(currentAdId)
+                        currentAdId = adId
+                        val dur = if (durationSeconds in 5..150) durationSeconds else (30 + bufferSec)
+                        localAdDuration = dur
+                        localAdRemaining = dur
+                        startLocalCountdown(dur)
+                    }
+                } else {
+                    localAdActive = true
+                    currentAdId = adId
+                    val dur = if (durationSeconds in 5..150) durationSeconds else (30 + bufferSec)
+                    localAdDuration = dur
+                    localAdRemaining = dur
+                    startLocalCountdown(dur)
+                }
+            } else {
+                if (localAdActive) {
+                    consecutiveCleanPlaylists++
+                    if (cleanStreamStartTime == 0L) {
+                        cleanStreamStartTime = now
+                        if (localAdRemaining <= 0 || localAdRemaining > bufferSec) {
+                            localAdRemaining = bufferSec
+                            localAdDuration = maxOf(localAdDuration, bufferSec)
+                            startLocalCountdown(bufferSec)
+                        }
+                    }
+
+                    val timeSinceClean = now - cleanStreamStartTime
+                    if ((timeSinceClean >= bufferMs && consecutiveCleanPlaylists >= 2 && localAdRemaining <= 0) ||
+                        (timeSinceClean >= bufferMs + 3000L && consecutiveCleanPlaylists >= 2)) {
+                        endLocalAdBreak()
+                    }
+                }
+            }
+        }
+    }
 
     val exoPlayer = if (isExistingStream) {
         checkNotNull(existingPlayer)
@@ -784,10 +924,35 @@ fun StreamTile(
         }
     }
 
-    val effectiveVolume = if (isMuted) 0f else volume.coerceIn(0f, 1f)
+    DisposableEffect(exoPlayer) {
+        val listener = object : Player.Listener {
+            override fun onEvents(player: Player, events: Player.Events) {
+                val liveOffset = player.currentLiveOffset
+                if (liveOffset != C.TIME_UNSET && liveOffset > 0L) {
+                    cachedBufferDurationMs.set(liveOffset.coerceIn(1000L, 15000L))
+                    return
+                }
+                val buffered = player.totalBufferedDuration
+                if (buffered > 0L) {
+                    cachedBufferDurationMs.set(buffered.coerceIn(1000L, 15000L))
+                    return
+                }
+                val target = if (isLowLatency) lowLatencyBufferMs.toLong() else 8000L
+                cachedBufferDurationMs.set(target.coerceIn(1000L, 15000L))
+            }
+        }
+        exoPlayer.addListener(listener)
+        onDispose {
+            exoPlayer.removeListener(listener)
+        }
+    }
+
+    val isAdMuted = isAutoMuteAds && adBreakActive
+    val effectiveVolume = if (isMuted || isAdMuted) 0f else volume.coerceIn(0f, 1f)
 
     DisposableEffect(channel) {
         onDispose {
+            adCountdownJob?.cancel()
             playerViewRef?.player = null
             if (isExistingStream) {
                 existingPlayer.volume = 1f
@@ -826,8 +991,56 @@ fun StreamTile(
         }
 
         if (playlistUrl != null) {
-            val mediaItem = MediaItem.fromUri(Uri.parse(playlistUrl))
-            exoPlayer.setMediaItem(mediaItem)
+            val httpFactory = DefaultHttpDataSource.Factory()
+                .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+                .setConnectTimeoutMs(8000)
+                .setReadTimeoutMs(8000)
+
+            val dataSourceFactory = TwitchAdDetectingDataSourceFactory(
+                upstreamFactory = httpFactory,
+                bufferMsProvider = { cachedBufferDurationMs.get() },
+                tag = "MultiStream-$channel"
+            ) { hasAd, adId, dur ->
+                handleLocalAdDetection(hasAd, adId, dur)
+            }
+
+            val finalUrl = if (!isLowLatency) {
+                playlistUrl.replace("fast_bread=true", "fast_bread=false")
+            } else {
+                playlistUrl
+            }
+
+            val mediaItem = MediaItem.Builder()
+                .setUri(Uri.parse(finalUrl))
+                .setLiveConfiguration(
+                    if (isLowLatency) {
+                        val target = lowLatencyBufferMs.coerceIn(2000, 8000)
+                        val minOffset = (target - 1500).coerceAtLeast(1500)
+                        val maxOffset = (target + 4000).coerceAtLeast(6000)
+                        MediaItem.LiveConfiguration.Builder()
+                            .setTargetOffsetMs(target.toLong())
+                            .setMinOffsetMs(minOffset.toLong())
+                            .setMaxOffsetMs(maxOffset.toLong())
+                            .setMinPlaybackSpeed(1.0f)
+                            .setMaxPlaybackSpeed(1.005f)
+                            .build()
+                    } else {
+                        MediaItem.LiveConfiguration.Builder()
+                            .setTargetOffsetMs(8000)
+                            .setMinOffsetMs(5000)
+                            .setMaxOffsetMs(15000)
+                            .setMinPlaybackSpeed(0.99f)
+                            .setMaxPlaybackSpeed(1.01f)
+                            .build()
+                    }
+                )
+                .build()
+
+            val hlsMediaSource = HlsMediaSource.Factory(dataSourceFactory)
+                .setAllowChunklessPreparation(true)
+                .createMediaSource(mediaItem)
+
+            exoPlayer.setMediaSource(hlsMediaSource)
             exoPlayer.prepare()
             exoPlayer.play()
             isLoading = false
@@ -948,6 +1161,20 @@ fun StreamTile(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                    if (adBreakActive) {
+                        Surface(
+                            color = TwitchPurple,
+                            shape = RoundedCornerShape(4.dp)
+                        ) {
+                            Text(
+                                text = if (adBreakRemaining > 0) "AD • ${adBreakRemaining}s" else "AD",
+                                color = Color.White,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
                 }
 
                 Row(
@@ -956,13 +1183,13 @@ fun StreamTile(
                 ) {
                     // Volume percentage pill badge (tap to toggle volume slider)
                     Surface(
-                        color = if (isMuted || effectiveVolume == 0f) TwitchRed.copy(alpha = 0.22f) else TwitchPurple.copy(alpha = 0.35f),
+                        color = if (isAdMuted) TwitchPurple.copy(alpha = 0.35f) else if (isMuted || effectiveVolume == 0f) TwitchRed.copy(alpha = 0.22f) else TwitchPurple.copy(alpha = 0.35f),
                         shape = RoundedCornerShape(10.dp),
                         modifier = Modifier.clickable { showVolumeSlider = !showVolumeSlider }
                     ) {
                         Text(
-                            text = if (isMuted || effectiveVolume == 0f) "Muted" else "${(effectiveVolume * 100).roundToInt()}%",
-                            color = if (isMuted || effectiveVolume == 0f) TwitchRed else Color.White,
+                            text = if (isAdMuted) "Ad Muted" else if (isMuted || effectiveVolume == 0f) "Muted" else "${(effectiveVolume * 100).roundToInt()}%",
+                            color = if (isAdMuted) TwitchTeal else if (isMuted || effectiveVolume == 0f) TwitchRed else Color.White,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
@@ -975,11 +1202,15 @@ fun StreamTile(
                         modifier = Modifier.size(26.dp)
                     ) {
                         val icon = when {
-                            isMuted || effectiveVolume == 0f -> Icons.AutoMirrored.Filled.VolumeOff
+                            isAdMuted || isMuted || effectiveVolume == 0f -> Icons.AutoMirrored.Filled.VolumeOff
                             effectiveVolume < 0.5f -> Icons.AutoMirrored.Filled.VolumeDown
                             else -> Icons.AutoMirrored.Filled.VolumeUp
                         }
-                        val tint = if (isMuted || effectiveVolume == 0f) TwitchRed else TwitchGreen
+                        val tint = when {
+                            isAdMuted -> TwitchTeal
+                            isMuted || effectiveVolume == 0f -> TwitchRed
+                            else -> TwitchGreen
+                        }
                         Icon(
                             imageVector = icon,
                             contentDescription = if (isMuted || effectiveVolume == 0f) "Unmute" else "Mute",
@@ -1024,15 +1255,24 @@ fun StreamTile(
                             onClick = onToggleMute,
                             modifier = Modifier.size(22.dp)
                         ) {
+                            val icon = when {
+                                isAdMuted || isMuted || effectiveVolume == 0f -> Icons.AutoMirrored.Filled.VolumeOff
+                                else -> Icons.AutoMirrored.Filled.VolumeDown
+                            }
+                            val tint = when {
+                                isAdMuted -> TwitchTeal
+                                isMuted || effectiveVolume == 0f -> TwitchRed
+                                else -> TwitchGreen
+                            }
                             Icon(
-                                imageVector = if (isMuted || effectiveVolume == 0f) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeDown,
+                                imageVector = icon,
                                 contentDescription = if (isMuted || effectiveVolume == 0f) "Unmute" else "Mute",
-                                tint = if (isMuted || effectiveVolume == 0f) TwitchRed else TwitchGreen,
+                                tint = tint,
                                 modifier = Modifier.size(15.dp)
                             )
                         }
                         Slider(
-                            value = effectiveVolume,
+                            value = if (isAdMuted) 0f else effectiveVolume,
                             onValueChange = { newVol ->
                                 onVolumeChange(newVol)
                                 if (isMuted && newVol > 0f) {
@@ -1050,11 +1290,11 @@ fun StreamTile(
                             )
                         )
                         Text(
-                            text = "${(effectiveVolume * 100).roundToInt()}%",
-                            color = Color.White,
+                            text = if (isAdMuted) "Ad Muted" else "${(effectiveVolume * 100).roundToInt()}%",
+                            color = if (isAdMuted) TwitchTeal else Color.White,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
-                            modifier = Modifier.width(36.dp),
+                            modifier = Modifier.width(if (isAdMuted) 58.dp else 36.dp),
                             textAlign = TextAlign.End
                         )
                     }
@@ -1094,6 +1334,112 @@ fun StreamTile(
                     )
                 } else if (errorMessage != null) {
                     Text(errorMessage ?: "", color = TwitchTextDim, fontSize = 12.sp)
+                }
+
+                // Commercial Break Placeholder & Countdown Overlay
+                if (adBreakActive && isShowAdOverlay) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(TwitchDark),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.TvOff,
+                                contentDescription = null,
+                                tint = TwitchPurple,
+                                modifier = Modifier.size(28.dp)
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Commercial Break in Progress",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Surface(
+                                color = TwitchDarkCard,
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    if (isAutoMuteAds) {
+                                        Icon(
+                                            Icons.AutoMirrored.Filled.VolumeOff,
+                                            contentDescription = null,
+                                            tint = TwitchPurple,
+                                            modifier = Modifier.size(12.dp)
+                                        )
+                                    }
+                                    Text(
+                                        text = if (adBreakRemaining > 0) "${adBreakRemaining}s remaining" else "Ending soon...",
+                                        color = TwitchTeal,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp
+                                    )
+                                    if (isAutoMuteAds) {
+                                        Text(
+                                            text = "• Muted",
+                                            color = TwitchTextDim,
+                                            fontSize = 10.sp
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Compact top pill when overlay is turned off but ad is playing
+                if (adBreakActive && !isShowAdOverlay) {
+                    Surface(
+                        color = TwitchDarkCard.copy(alpha = 0.9f),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            if (isAutoMuteAds) {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.VolumeOff,
+                                    contentDescription = null,
+                                    tint = TwitchPurple,
+                                    modifier = Modifier.size(13.dp)
+                                )
+                            }
+                            Text(
+                                text = if (adBreakRemaining > 0) "Commercial • ${adBreakRemaining}s" else "Commercial break",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp
+                            )
+                            if (isAutoMuteAds) {
+                                Text(
+                                    text = "(Muted)",
+                                    color = TwitchTextDim,
+                                    fontSize = 10.sp
+                                )
+                            }
+                        }
+                    }
                 }
 
                 // Visual target feedback during drag & drop

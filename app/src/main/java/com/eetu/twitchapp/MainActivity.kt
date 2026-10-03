@@ -311,10 +311,14 @@ class MainActivity : ComponentActivity() {
                             isPlayerVisible = false
                             NavEntry(key = destination) {
                                 val currentCh = playerViewModel.currentChannel.collectAsState().value
+                                val existingAdActive = playerViewModel.adBreakActive.collectAsState().value
+                                val existingAdRemaining = playerViewModel.adBreakRemaining.collectAsState().value
                                 MultiStreamScreen(
                                     initialChannels = destination.initialChannels,
                                     existingPlayer = if (currentCh.isNotEmpty()) playerViewModel.exoPlayer else null,
                                     existingChannel = currentCh,
+                                    existingAdActive = existingAdActive,
+                                    existingAdRemaining = existingAdRemaining,
                                     onReturnToSingleStream = { remainingChannel ->
                                         val current = playerViewModel.currentChannel.value
                                         if (!current.equals(remainingChannel, ignoreCase = true)) {
